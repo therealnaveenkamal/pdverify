@@ -51,9 +51,14 @@ python main.py --device cpu --draft-model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --v
 ### GPU Production Mode
 
 ```bash
+# Confirm a GPU is visible
+nvidia-smi
+
 # Run on GPU with actual models
 python main.py --device cuda --draft-model TinyLlama/TinyLlama-1.1B-Chat-v1.0 --verifier-model meta-llama/Llama-2-7b-hf
 ```
+
+If you pass `--device cuda` on a machine without a GPU, the program now logs a warning and automatically falls back to CPU execution.
 
 ## Running Experiments
 

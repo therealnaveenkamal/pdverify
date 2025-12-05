@@ -6,6 +6,7 @@ Main entry point for Verify-PD system.
 import argparse
 import logging
 import sys
+import torch
 
 from src.engine import SpeculativeEngine
 from src.scheduler import Request, LaneType
@@ -81,11 +82,16 @@ def main():
     """Main entry point."""
     args = parse_args()
     setup_logging(args.verbose)
-    
+
     logger = logging.getLogger(__name__)
     logger.info("=" * 80)
     logger.info("Verify-PD: Disaggregated Serving for Speculative Decoding")
     logger.info("=" * 80)
+
+    # Validate device availability early so users aren't surprised later
+    if args.device == "cuda" and not torch.cuda.is_available():
+        logger.warning("CUDA requested but not available; falling back to CPU.")
+        args.device = "cpu"
     
     # Get configuration
     if args.test_mode:
