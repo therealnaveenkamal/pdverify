@@ -43,25 +43,48 @@ class BaselineSpeculativeDecoding:
         """Load models."""
         logger.info("Loading baseline models...")
         
+        # Load tokenizer from draft model (used for both models)
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.draft_model_name
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
+        # Load draft model
         self.draft_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.draft_model_name
         ).to(self.device)
         self.draft_model.eval()
         
+        # Load verifier model - use its own tokenizer if different
+        # But for now, we'll use the draft tokenizer and ensure compatibility
         self.verifier_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.verifier_model_name
         ).to(self.device)
         self.verifier_model.eval()
         
+        # Get vocabulary sizes to ensure compatibility
+        self.draft_vocab_size = self.draft_model.config.vocab_size
+        self.verifier_vocab_size = self.verifier_model.config.vocab_size
+        self.tokenizer_vocab_size = len(self.tokenizer)
+        
+        logger.info(f"Draft model vocab size: {self.draft_vocab_size}")
+        logger.info(f"Verifier model vocab size: {self.verifier_vocab_size}")
+        logger.info(f"Tokenizer vocab size: {self.tokenizer_vocab_size}")
         logger.info("Baseline models loaded")
     
     def generate(self, prompt: str, max_tokens: int = 100, draft_length: int = 4) -> tuple:
+        """
+        Generate text using baseline speculative decoding.
+        
+        Args:
+            prompt: Input prompt
+            max_tokens: Maximum tokens to generate
+            draft_length: Number of draft tokens per iteration
+            
+        Returns:
+            Tuple of (generated_text, latency_ms)
+        """
         """
         Generate text using baseline speculative decoding.
         
@@ -94,8 +117,10 @@ class BaselineSpeculativeDecoding:
                 
                 generated_tokens.extend(accepted_tokens)
                 
-                # Update input
-                new_ids = torch.tensor([accepted_tokens], device=self.device)
+                # Update input - ensure tokens are within valid range
+                valid_accepted = [min(t, self.draft_vocab_size - 1) if t >= self.draft_vocab_size else t 
+                                 for t in accepted_tokens]
+                new_ids = torch.tensor([valid_accepted], device=self.device, dtype=input_ids.dtype)
                 input_ids = torch.cat([input_ids, new_ids], dim=1)
                 
                 # Check for EOS
@@ -117,22 +142,43 @@ class BaselineSpeculativeDecoding:
             outputs = self.draft_model(current_ids)
             logits = outputs.logits[:, -1, :]
             next_token = torch.argmax(logits, dim=-1)
-            draft_tokens.append(next_token.item())
-            current_ids = torch.cat([current_ids, next_token.unsqueeze(0)], dim=1)
+            token_id = next_token.item()
+            
+            # Ensure token ID is within valid range
+            if token_id >= self.draft_vocab_size:
+                logger.warning(f"Generated token ID {token_id} exceeds vocab size {self.draft_vocab_size}, clamping")
+                token_id = min(token_id, self.draft_vocab_size - 1)
+            
+            draft_tokens.append(token_id)
+            # Properly shape token for concatenation: [batch_size, 1]
+            next_token_tensor = torch.tensor([[token_id]], device=self.device, dtype=input_ids.dtype)
+            current_ids = torch.cat([current_ids, next_token_tensor], dim=1)
         
         return draft_tokens
     
     def _verify_draft(self, input_ids: torch.Tensor, draft_tokens: List[int]) -> tuple:
         """Verify draft tokens."""
-        draft_ids = torch.tensor([draft_tokens], device=self.device)
+        # Ensure all draft tokens are within verifier vocabulary range
+        valid_draft_tokens = [min(t, self.verifier_vocab_size - 1) if t >= self.verifier_vocab_size else t 
+                             for t in draft_tokens]
+        
+        draft_ids = torch.tensor([valid_draft_tokens], device=self.device, dtype=input_ids.dtype)
         full_input = torch.cat([input_ids, draft_ids], dim=1)
         
         accepted_tokens = []
         outputs = self.verifier_model(full_input)
         logits = outputs.logits
         
-        for i, draft_token in enumerate(draft_tokens):
-            predicted_token = torch.argmax(logits[:, input_ids.size(1) + i - 1, :], dim=-1).item()
+        for i, draft_token in enumerate(valid_draft_tokens):
+            # Fix indexing: we want logits at position input_ids.size(1) + i
+            logit_idx = input_ids.size(1) + i
+            if logit_idx >= logits.size(1):
+                break
+            predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
+            
+            # Ensure predicted token is within valid range
+            if predicted_token >= self.verifier_vocab_size:
+                predicted_token = min(predicted_token, self.verifier_vocab_size - 1)
             
             if predicted_token == draft_token:
                 accepted_tokens.append(draft_token)

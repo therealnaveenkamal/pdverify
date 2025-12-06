@@ -9,7 +9,9 @@ from .config import (
     HardwareConfig,
     get_default_config,
     get_cpu_config,
-    get_test_config
+    get_test_config,
+    get_fast_config,
+    get_performance_config
 )
 from .stream_manager import StreamManager
 
@@ -23,5 +25,7 @@ __all__ = [
     'get_default_config',
     'get_cpu_config',
     'get_test_config',
+    'get_fast_config',
+    'get_performance_config',
     'StreamManager'
 ]

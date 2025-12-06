@@ -3,6 +3,7 @@ Three-lane scheduler for Verify-PD system.
 """
 
 import time
+import threading
 from typing import Optional, List, Dict
 import logging
 
@@ -48,82 +49,105 @@ class ThreeLaneScheduler:
         self.total_requests_submitted = 0
         self.total_requests_completed = 0
         self.scheduler_start_time = time.time()
+
+        # Thread safety - use RLock for reentrant locking
+        self._lock = threading.RLock()
     
     def submit_request(self, request: Request) -> bool:
         """
         Submit a request to appropriate lane based on its stage.
-        
+
         Args:
             request: Request to submit
-            
+
         Returns:
             True if submitted successfully
         """
-        lane = self.lanes[request.stage]
-        success = lane.add_request(request)
-        
-        if success:
-            self.total_requests_submitted += 1
-            logger.debug(f"Submitted {request.request_id} to {request.stage.name} lane")
-        
-        return success
+        with self._lock:
+            lane = self.lanes[request.stage]
+            success = lane.add_request(request)
+
+            if success:
+                self.total_requests_submitted += 1
+                logger.debug(f"Submitted {request.request_id} to {request.stage.name} lane")
+
+            return success
     
     def get_next_batch(self) -> Optional[List[Request]]:
         """
         Get next batch of requests following priority order.
         Priority: DECODE > VERIFY > PREFILL
-        
+
         Returns:
             Batch of requests from highest priority non-empty lane
         """
-        # Check lanes in priority order
-        priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
-        
-        for lane_type in priority_order:
-            lane = self.lanes[lane_type]
-            if not lane.is_empty():
-                # Get batch size based on lane type
-                if lane_type == LaneType.VERIFY:
-                    batch_size = self.config.verify_micro_batch_size
-                else:
-                    batch_size = self.config.batch_size
-                
-                batch = lane.get_batch(batch_size)
-                if batch:
-                    logger.debug(f"Scheduled batch of {len(batch)} from {lane_type.name} lane")
-                    return batch
-        
-        return None
+        with self._lock:
+            # Check lanes in priority order
+            priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
+
+            for lane_type in priority_order:
+                    lane = self.lanes[lane_type]
+                    if not lane.is_empty():
+                        # Get batch size based on lane type
+                        if lane_type == LaneType.VERIFY:
+                            batch_size = self.config.verify_micro_batch_size
+                        else:
+                            batch_size = self.config.batch_size
+
+                        batch = lane.get_batch(batch_size)
+                        if batch:
+                            logger.debug(f"Scheduled batch of {len(batch)} from {lane_type.name} lane")
+                            return batch
+
+            return None
     
     def transition_request(self, request: Request, new_stage: LaneType) -> bool:
         """
         Transition a request to a new processing stage.
-        
+
         Args:
             request: Request to transition
             new_stage: New lane/stage for the request
-            
+
         Returns:
             True if transition successful
         """
-        request.stage = new_stage
-        return self.submit_request(request)
+        with self._lock:
+            # Note: In the current design, requests are removed from lanes when get_next_batch is called,
+            # so we don't need to explicitly remove them here. Just update the stage and submit.
+
+            request.stage = new_stage
+            return self.submit_request(request)
     
     def complete_request(self, request: Request):
         """
         Mark a request as completed.
-        
+
         Args:
             request: Request that completed
         """
-        request.completion_time = time.time()
-        self.total_requests_completed += 1
-        
-        if request.request_id in self.active_requests:
-            del self.active_requests[request.request_id]
-        
-        logger.info(f"Completed request {request.request_id} "
-                   f"(accepted {request.tokens_accepted}/{request.tokens_generated} tokens)")
+        with self._lock:
+            request.completion_time = time.time()
+            self.total_requests_completed += 1
+
+            if request.request_id in self.active_requests:
+                del self.active_requests[request.request_id]
+
+            logger.info(f"Completed request {request.request_id} "
+                       f"(accepted {request.tokens_accepted}/{request.tokens_generated} tokens)")
+
+    def get_active_requests(self) -> List[Request]:
+        """
+        Get all currently active requests across all lanes.
+
+        Returns:
+            List of active requests
+        """
+        with self._lock:
+            active = []
+            for lane in self.lanes.values():
+                active.extend(lane.get_all_requests())
+            return active
     
     def get_lane_stats(self) -> Dict[str, dict]:
         """Get statistics for all lanes."""

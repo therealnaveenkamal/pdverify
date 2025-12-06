@@ -3,7 +3,7 @@ Lane abstraction for priority queues.
 """
 
 from collections import deque
-from typing import Any, Optional
+from typing import Any, Optional, List
 from enum import IntEnum
 import logging
 
@@ -51,6 +51,17 @@ class Request:
         self.decode_start_time = None
         self.verify_start_time = None
         self.completion_time = None
+        
+        # Async processing state
+        self.completed = False
+        self.error = None
+        self.result_text = None
+        self.generated_tokens = []
+        self._input_ids = None
+
+        # Async processing state
+        self.completed = False
+        self.error = None
     
     def get_acceptance_ratio(self) -> float:
         """Calculate acceptance ratio for this request."""
@@ -130,7 +141,11 @@ class Lane:
             if request:
                 batch.append(request)
         return batch
-    
+
+    def get_all_requests(self) -> List[Request]:
+        """Get all requests currently in this lane."""
+        return list(self.queue)
+
     def peek(self) -> Optional[Request]:
         """Peek at next request without removing it."""
         return self.queue[0] if self.queue else None

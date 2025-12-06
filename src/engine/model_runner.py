@@ -3,6 +3,7 @@ Model runner for executing draft and verifier models.
 """
 
 import torch
+import threading
 from typing import List, Dict, Optional, Any
 import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -41,10 +42,17 @@ class ModelRunner:
         self.draft_model = None
         self.verifier_model = None
         self.tokenizer = None
+        self.draft_vocab_size = None
+        self.verifier_vocab_size = None
+        self.tokenizer_vocab_size = None
         
         # KV cache (simplified - in production would use PagedAttention)
         self.kv_cache: Dict[str, Any] = {}
-        
+
+        # Thread safety locks
+        self._draft_lock = threading.Lock()
+        self._verifier_lock = threading.Lock()
+
         logger.info(f"ModelRunner initialized on {self.device}")
     
     def load_models(self):
@@ -78,6 +86,11 @@ class ModelRunner:
             trust_remote_code=self.model_config.trust_remote_code
         ).to(self.device)
         self.verifier_model.eval()
+
+        # Vocab sizes for clamping
+        self.draft_vocab_size = self.draft_model.config.vocab_size
+        self.verifier_vocab_size = self.verifier_model.config.vocab_size
+        self.tokenizer_vocab_size = len(self.tokenizer)
         
         logger.info("Models loaded successfully")
     
@@ -108,20 +121,40 @@ class ModelRunner:
             List of generated token IDs
         """
         draft_tokens = []
-        current_ids = input_ids
+        current_ids = input_ids.to(torch.long)
         
-        with torch.no_grad():
-            for _ in range(num_tokens):
-                # Get logits from draft model
-                outputs = self.draft_model(current_ids)
-                logits = outputs.logits[:, -1, :]
-                
-                # Greedy sampling (can be made more sophisticated)
-                next_token = torch.argmax(logits, dim=-1)
-                draft_tokens.append(next_token.item())
-                
-                # Append for next iteration
-                current_ids = torch.cat([current_ids, next_token.unsqueeze(0)], dim=1)
+        # Get CUDA stream if available
+        stream = None
+        if stream_id is not None and self.stream_manager:
+            stream = self.stream_manager.get_stream(stream_id)
+        
+        # Use stream context if available
+        with self._draft_lock:
+            with torch.no_grad():
+                if stream is not None:
+                    with torch.cuda.stream(stream):
+                        for _ in range(num_tokens):
+                            outputs = self.draft_model(current_ids)
+                            logits = outputs.logits[:, -1, :]
+                            next_token = torch.argmax(logits, dim=-1)
+                            token_id = next_token.item()
+                            if self.draft_vocab_size is not None and token_id >= self.draft_vocab_size:
+                                token_id = self.draft_vocab_size - 1
+                            draft_tokens.append(token_id)
+                            token_tensor = torch.tensor([[token_id]], device=current_ids.device, dtype=current_ids.dtype)
+                            current_ids = torch.cat([current_ids, token_tensor], dim=1)
+                    stream.synchronize()
+                else:
+                    for _ in range(num_tokens):
+                        outputs = self.draft_model(current_ids)
+                        logits = outputs.logits[:, -1, :]
+                        next_token = torch.argmax(logits, dim=-1)
+                        token_id = next_token.item()
+                        if self.draft_vocab_size is not None and token_id >= self.draft_vocab_size:
+                            token_id = self.draft_vocab_size - 1
+                        draft_tokens.append(token_id)
+                        token_tensor = torch.tensor([[token_id]], device=current_ids.device, dtype=current_ids.dtype)
+                        current_ids = torch.cat([current_ids, token_tensor], dim=1)
         
         return draft_tokens
     
@@ -142,29 +175,59 @@ class ModelRunner:
         Returns:
             Tuple of (accepted_tokens, num_accepted)
         """
+        # Get CUDA stream if available
+        stream = None
+        if stream_id is not None and self.stream_manager:
+            stream = self.stream_manager.get_stream(stream_id)
+
+        # Ensure integer type
+        input_ids = input_ids.to(torch.long)
+
         # Create input with draft tokens
-        draft_ids = torch.tensor([draft_tokens], device=self.device)
+        draft_ids = torch.tensor([draft_tokens], device=self.device, dtype=torch.long)
         full_input = torch.cat([input_ids, draft_ids], dim=1)
-        
+
         accepted_tokens = []
-        
-        with torch.no_grad():
-            # Forward pass through verifier
-            outputs = self.verifier_model(full_input)
-            logits = outputs.logits
-            
-            # Check each draft token
-            for i, draft_token in enumerate(draft_tokens):
-                # Get predicted token at this position
-                predicted_token = torch.argmax(logits[:, input_ids.size(1) + i - 1, :], dim=-1).item()
-                
-                if predicted_token == draft_token:
-                    # Token accepted
-                    accepted_tokens.append(draft_token)
+
+        # Use stream context if available
+        with self._verifier_lock:
+            with torch.no_grad():
+                if stream is not None:
+                    with torch.cuda.stream(stream):
+                        outputs = self.verifier_model(full_input)
+                        logits = outputs.logits
+
+                        for i, draft_token in enumerate(draft_tokens):
+                            logit_idx = input_ids.size(1) + i
+                            if logit_idx >= logits.size(1):
+                                break
+                            predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
+                            if self.verifier_vocab_size is not None and predicted_token >= self.verifier_vocab_size:
+                                predicted_token = self.verifier_vocab_size - 1
+
+                            if predicted_token == draft_token:
+                                accepted_tokens.append(draft_token)
+                            else:
+                                accepted_tokens.append(predicted_token)
+                                break
+                    stream.synchronize()
                 else:
-                    # Token rejected - use verifier's prediction and stop
-                    accepted_tokens.append(predicted_token)
-                    break
+                    outputs = self.verifier_model(full_input)
+                    logits = outputs.logits
+
+                    for i, draft_token in enumerate(draft_tokens):
+                        logit_idx = input_ids.size(1) + i
+                        if logit_idx >= logits.size(1):
+                            break
+                        predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
+                        if self.verifier_vocab_size is not None and predicted_token >= self.verifier_vocab_size:
+                            predicted_token = self.verifier_vocab_size - 1
+
+                        if predicted_token == draft_token:
+                            accepted_tokens.append(draft_token)
+                        else:
+                            accepted_tokens.append(predicted_token)
+                            break
         
         return accepted_tokens, len(accepted_tokens)
     
@@ -175,11 +238,11 @@ class ModelRunner:
     ) -> torch.Tensor:
         """
         Prefill operation - encode prompt and prepare KV cache.
-        
+
         Args:
             prompt: Input prompt
             stream_id: CUDA stream ID if using streams
-            
+
         Returns:
             Input token IDs
         """
@@ -191,9 +254,9 @@ class ModelRunner:
             truncation=True,
             max_length=self.model_config.max_model_len
         )
-        
+
         input_ids = inputs["input_ids"].to(self.device)
-        
+
         # In production, this would populate PagedAttention KV cache
         # For now, we just return the input IDs
         return input_ids

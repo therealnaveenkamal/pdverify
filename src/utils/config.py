@@ -12,6 +12,7 @@ class ModelConfig:
     draft_model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     verifier_model_name: str = "meta-llama/Llama-2-7b-hf"
     max_model_len: int = 2048
+    max_new_tokens: int = 100  # Maximum tokens to generate per request
     dtype: str = "auto"  # auto, float16, bfloat16
     trust_remote_code: bool = False
 
@@ -101,6 +102,18 @@ def get_cpu_config() -> VerifyPDConfig:
     return config
 
 
+def get_performance_config() -> VerifyPDConfig:
+    """Get configuration optimized to demonstrate Verify-PD performance benefits."""
+    config = get_default_config()
+    # Fast draft model + accurate verifier for optimal speculation
+    config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    config.model.verifier_model_name = "meta-llama/Llama-2-7b-hf"
+    config.model.max_new_tokens = 100  # Enough tokens for speculation to shine
+    config.scheduler.batch_size = 2
+    config.scheduler.verify_micro_batch_size = 1  # Verify is more expensive
+    return config
+
+
 def get_test_config() -> VerifyPDConfig:
     """Get test configuration with small models."""
     config = get_cpu_config()
@@ -108,4 +121,17 @@ def get_test_config() -> VerifyPDConfig:
     config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     config.model.verifier_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     config.model.max_model_len = 512
+    config.model.max_new_tokens = 20  # Fewer tokens for fast iteration
+    return config
+
+
+def get_fast_config() -> VerifyPDConfig:
+    """Get fast iteration configuration with small draft + large verifier models."""
+    config = get_default_config()
+    # Use fast draft model + accurate verifier model for true speculation benefit
+    config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Fast draft
+    config.model.verifier_model_name = "meta-llama/Llama-2-7b-hf"  # Accurate verifier
+    config.model.max_new_tokens = 50  # More tokens to see speculation benefit
+    config.scheduler.batch_size = 1  # Small batches for fast iteration
+    config.scheduler.verify_micro_batch_size = 1
     return config

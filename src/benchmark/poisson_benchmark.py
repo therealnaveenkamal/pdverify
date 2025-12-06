@@ -94,13 +94,14 @@ class PoissonBenchmark:
         logger.info(f"Generated {len(requests)} requests over {current_time:.1f} seconds")
         return requests
     
-    def run_benchmark(self, engine, requests: Optional[List[BenchmarkRequest]] = None):
+    def run_benchmark(self, engine, requests: Optional[List[BenchmarkRequest]] = None, max_concurrent: int = 5):
         """
-        Run benchmark on an engine.
+        Run benchmark on an engine with concurrent request processing.
         
         Args:
-            engine: Engine to test (must have process_request method)
+            engine: Engine to test (must have submit_request_async method)
             requests: Pre-generated requests, or None to generate
+            max_concurrent: Maximum number of concurrent requests
             
         Returns:
             Benchmark results
@@ -108,52 +109,76 @@ class PoissonBenchmark:
         if requests is None:
             requests = self.generate_requests()
         
-        logger.info(f"Starting benchmark with {len(requests)} requests")
+        logger.info(f"Starting benchmark with {len(requests)} requests (max_concurrent={max_concurrent})")
         
+        from ..scheduler import Request, LaneType
+        import threading
+
         results = []
         start_time = time.time()
-        last_arrival_time = 0.0
-        
-        for request in requests:
-            # Wait for request arrival time
-            elapsed = time.time() - start_time
-            wait_time = request.arrival_time - elapsed
-            
-            if wait_time > 0:
-                time.sleep(wait_time)
-            
-            # Process request
-            from ..scheduler import Request, LaneType
-            
-            req = Request(
-                request_id=request.request_id,
-                prompt=request.prompt,
+        active_requests = {}  # request_id -> (benchmark_req, start_time)
+        remaining_requests = list(requests)
+        request_idx = 0
+
+        # Thread-safe result collection
+        result_lock = threading.Lock()
+
+        def completion_callback(engine_req: Request, result_text: str):
+            """Callback called when a request completes."""
+            with result_lock:
+                benchmark_req = active_requests.pop(engine_req.request_id, None)
+                if benchmark_req is None:
+                    logger.error(f"Completion callback for unknown request {engine_req.request_id}")
+                    return
+
+                benchmark_req, start_time = benchmark_req
+                end_time = time.time()
+                latency_ms = (end_time - start_time) * 1000
+
+                result = {
+                    "request_id": benchmark_req.request_id,
+                    "latency_ms": latency_ms,
+                    "tokens_generated": getattr(engine_req, 'tokens_generated', 0),
+                    "tokens_accepted": getattr(engine_req, 'tokens_accepted', 0),
+                    "acceptance_ratio": getattr(engine_req, 'get_acceptance_ratio', lambda: 0.0)()
+                }
+
+                if hasattr(engine_req, 'error') and engine_req.error:
+                    result["error"] = engine_req.error
+
+                results.append(result)
+                logger.debug(f"Completed {benchmark_req.request_id} in {latency_ms:.1f}ms")
+
+        # Submit all requests (the engine handles concurrency internally)
+        while request_idx < len(remaining_requests):
+            benchmark_req = remaining_requests[request_idx]
+            request_idx += 1
+
+            engine_req = Request(
+                request_id=benchmark_req.request_id,
+                prompt=benchmark_req.prompt,
                 stage=LaneType.PREFILL,
                 created_at=time.time()
             )
-            
+
             req_start = time.time()
             try:
-                result_text = engine.process_request(req)
-                req_end = time.time()
-                
-                results.append({
-                    "request_id": request.request_id,
-                    "latency_ms": (req_end - req_start) * 1000,
-                    "tokens_generated": req.tokens_generated,
-                    "tokens_accepted": req.tokens_accepted,
-                    "acceptance_ratio": req.get_acceptance_ratio()
-                })
-                
-                logger.debug(f"Completed {request.request_id} in {(req_end - req_start) * 1000:.1f}ms")
-            
+                active_requests[benchmark_req.request_id] = (benchmark_req, req_start)
+                engine.submit_request_async(engine_req, callback=completion_callback)
+                logger.debug(f"Submitted {benchmark_req.request_id}")
             except Exception as e:
-                logger.error(f"Error processing {request.request_id}: {e}")
-                results.append({
-                    "request_id": request.request_id,
-                    "error": str(e)
-                })
-        
+                logger.error(f"Error submitting {benchmark_req.request_id}: {e}")
+                with result_lock:
+                    results.append({
+                        "request_id": benchmark_req.request_id,
+                        "error": str(e),
+                        "latency_ms": 0.0
+                    })
+
+        # Wait for all requests to complete
+        while len(active_requests) > 0:
+            time.sleep(0.01)  # Small sleep to avoid busy waiting
+
         total_time = time.time() - start_time
         logger.info(f"Benchmark completed in {total_time:.1f} seconds")
         
