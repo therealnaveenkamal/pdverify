@@ -72,7 +72,30 @@ class ThreeLaneScheduler:
                 logger.debug(f"Submitted {request.request_id} to {request.stage.name} lane")
 
             return success
-    
+
+    def get_next_task(self) -> Optional[Request]:
+        """
+        Get next single task from highest priority non-empty lane.
+        Used by worker thread for stage-based async processing.
+        Priority: DECODE (1) > VERIFY (2) > PREFILL (3)
+
+        Returns:
+            Single request from highest priority lane, or None if no work
+        """
+        with self._lock:
+            # Check lanes in priority order (lower number = higher priority)
+            priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
+
+            for lane_type in priority_order:
+                lane = self.lanes[lane_type]
+                if not lane.is_empty():
+                    request = lane.get_next_request()
+                    if request:
+                        logger.debug(f"[SCHEDULER] Dispatched {request.request_id} from {lane_type.name} lane")
+                        return request
+
+            return None
+
     def get_next_batch(self) -> Optional[List[Request]]:
         """
         Get next batch of requests following priority order.

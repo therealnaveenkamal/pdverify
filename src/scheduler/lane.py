@@ -17,6 +17,16 @@ class LaneType(IntEnum):
     PREFILL = 3  # Lowest priority - initial prompt processing
 
 
+class RequestState(IntEnum):
+    """Request processing states for async execution."""
+    QUEUED = 0        # Submitted, waiting for prefill
+    PREFILLING = 1    # Executing prefill stage
+    DECODING = 2      # Executing decode iteration
+    VERIFYING = 3     # Executing verify iteration
+    COMPLETED = 4     # All tokens generated
+    ERROR = 5         # Request failed
+
+
 class Request:
     """Represents a request in the system."""
     
@@ -43,7 +53,10 @@ class Request:
         self.stage = stage
         self.draft_tokens = draft_tokens or []
         self.created_at = created_at or 0.0
-        
+
+        # Processing state for async execution
+        self.state = RequestState.QUEUED
+
         # Tracking metrics
         self.tokens_generated = 0
         self.tokens_accepted = 0

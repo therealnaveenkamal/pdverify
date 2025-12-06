@@ -97,43 +97,49 @@ class PoissonBenchmark:
     def run_benchmark(self, engine, requests: Optional[List[BenchmarkRequest]] = None, max_concurrent: int = 5):
         """
         Run benchmark on an engine with concurrent request processing.
-        
+        Respects Poisson arrival times and enforces max_concurrent limit.
+
         Args:
             engine: Engine to test (must have submit_request_async method)
             requests: Pre-generated requests, or None to generate
             max_concurrent: Maximum number of concurrent requests
-            
+
         Returns:
             Benchmark results
         """
         if requests is None:
             requests = self.generate_requests()
-        
+
+        # Sort by arrival time
+        requests = sorted(requests, key=lambda r: r.arrival_time)
+
         logger.info(f"Starting benchmark with {len(requests)} requests (max_concurrent={max_concurrent})")
-        
+
         from ..scheduler import Request, LaneType
         import threading
 
         results = []
-        start_time = time.time()
         active_requests = {}  # request_id -> (benchmark_req, start_time)
-        remaining_requests = list(requests)
+        active_count = 0
         request_idx = 0
 
-        # Thread-safe result collection
+        # Thread-safe synchronization
         result_lock = threading.Lock()
+        active_count_lock = threading.Lock()
 
         def completion_callback(engine_req: Request, result_text: str):
             """Callback called when a request completes."""
+            nonlocal active_count
+
             with result_lock:
-                benchmark_req = active_requests.pop(engine_req.request_id, None)
-                if benchmark_req is None:
+                benchmark_req_data = active_requests.pop(engine_req.request_id, None)
+                if benchmark_req_data is None:
                     logger.error(f"Completion callback for unknown request {engine_req.request_id}")
                     return
 
-                benchmark_req, start_time = benchmark_req
+                benchmark_req, req_start = benchmark_req_data
                 end_time = time.time()
-                latency_ms = (end_time - start_time) * 1000
+                latency_ms = (end_time - req_start) * 1000
 
                 result = {
                     "request_id": benchmark_req.request_id,
@@ -149,11 +155,27 @@ class PoissonBenchmark:
                 results.append(result)
                 logger.debug(f"Completed {benchmark_req.request_id} in {latency_ms:.1f}ms")
 
-        # Submit all requests (the engine handles concurrency internally)
-        while request_idx < len(remaining_requests):
-            benchmark_req = remaining_requests[request_idx]
-            request_idx += 1
+            # Decrement active count
+            with active_count_lock:
+                active_count -= 1
 
+        # Submit requests at their arrival times
+        benchmark_start = time.time()
+
+        while request_idx < len(requests):
+            current_time = time.time() - benchmark_start
+            benchmark_req = requests[request_idx]
+
+            # Wait until arrival time
+            if benchmark_req.arrival_time > current_time:
+                time.sleep(benchmark_req.arrival_time - current_time)
+
+            # Enforce concurrency limit - wait for a slot
+            with active_count_lock:
+                while active_count >= max_concurrent:
+                    time.sleep(0.01)  # Release lock and wait
+
+            # Submit request
             engine_req = Request(
                 request_id=benchmark_req.request_id,
                 prompt=benchmark_req.prompt,
@@ -163,9 +185,17 @@ class PoissonBenchmark:
 
             req_start = time.time()
             try:
-                active_requests[benchmark_req.request_id] = (benchmark_req, req_start)
+                with result_lock:
+                    active_requests[benchmark_req.request_id] = (benchmark_req, req_start)
+
+                with active_count_lock:
+                    active_count += 1
+
                 engine.submit_request_async(engine_req, callback=completion_callback)
-                logger.debug(f"Submitted {benchmark_req.request_id}")
+
+                actual_submit_time = time.time() - benchmark_start
+                logger.debug(f"Submitted {benchmark_req.request_id} at t={actual_submit_time:.2f}s "
+                           f"(scheduled: {benchmark_req.arrival_time:.2f}s, active: {active_count})")
             except Exception as e:
                 logger.error(f"Error submitting {benchmark_req.request_id}: {e}")
                 with result_lock:
@@ -174,14 +204,19 @@ class PoissonBenchmark:
                         "error": str(e),
                         "latency_ms": 0.0
                     })
+                with active_count_lock:
+                    active_count -= 1
+
+            request_idx += 1
 
         # Wait for all requests to complete
-        while len(active_requests) > 0:
-            time.sleep(0.01)  # Small sleep to avoid busy waiting
+        logger.info(f"All requests submitted, waiting for completion...")
+        while active_count > 0:
+            time.sleep(0.01)
 
-        total_time = time.time() - start_time
+        total_time = time.time() - benchmark_start
         logger.info(f"Benchmark completed in {total_time:.1f} seconds")
-        
+
         return self._analyze_results(results, total_time)
     
     def _analyze_results(self, results: List[dict], total_time: float) -> dict:

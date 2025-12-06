@@ -13,7 +13,9 @@ import torch
 from src.engine import SpeculativeEngine
 from src.benchmark import BaselineSpeculativeDecoding, PoissonBenchmark, get_sharegpt_prompts
 from src.utils import get_cpu_config, get_default_config, get_test_config, get_fast_config, get_performance_config
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def setup_logging():
     """Setup logging."""
