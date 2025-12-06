@@ -71,8 +71,6 @@ cd pdverify
 # Install dependencies
 pip install -r requirements.txt
 
-# For GPU support, ensure CUDA is properly configured
-# pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ## Quick Start
@@ -139,20 +137,6 @@ pytest tests/ -v
 pytest tests/test_scheduler.py -v
 ```
 
-## Project Structure
-
-```
-pdverify/
-├── src/
-│   ├── scheduler/          # Three-lane scheduler with reentrant locking
-│   ├── engine/             # GPU stream-based speculative decoding engine
-│   ├── controller/         # Acceptance-aware feedback controller
-│   ├── benchmark/          # Poisson distribution benchmarking
-│   └── utils/              # Configuration and utilities
-├── results/                # Experiment outputs and metrics
-├── run_experiment.py       # Main experiment runner with model comparison
-└── README.md               # This file
-```
 
 ## Implementation Status
 
@@ -162,31 +146,79 @@ pdverify/
 -  **Benchmarking**: Comprehensive comparison tools
 -  **Model Support**: Flexible draft/verifier model configurations
 
-## GPU Deployment
+## Contributing
 
-### Using Modal.com
+**Help improve Verify-PD's performance!** 
 
-1. Install Modal CLI: `pip install modal`
-2. Set up account: `modal token new`
-3. Deploy: `modal deploy modal_deploy.py`
+### 🔧 **High-Impact Areas:**
+1. **GPU Stream Overlapping**: Implement true decode/verify parallelism within requests
+2. **Async Architecture**: Convert to asyncio-based request orchestration
+3. **Batch Processing**: Add cross-request batching for better GPU utilization
+4. **Memory Optimization**: Implement PagedAttention and KV-cache sharing
 
-### Using Vast.ai
+### 📝 **How to Contribute:**
+1. Fork the repository
+2. Implement optimizations from the roadmap above
+3. Run benchmarks with `python run_experiment.py --performance`
+4. Submit PRs with performance improvements
 
-1. Rent an A100/H100 instance
-2. SSH into instance
-3. Clone repo and run experiments
+**All contributions welcome - this is cutting-edge research in LLM serving!**
+
+## Next Steps & Future Optimizations
+
+### 🚀 **Performance Optimization Roadmap**
+
+**Phase 1: Intra-Request Parallelism (High Impact)**
+- Implement true decode/verify overlapping within individual requests using CUDA streams
+- Enable parallel draft generation and verification for the same request
+- Reduce per-request latency through GPU-level pipelining
+
+**Phase 2: Architecture Optimization (Medium Impact)**
+- Replace synchronous request processing with async task scheduling
+- Implement efficient GPU memory management and KV-cache sharing
+- Add request batching across stages for better GPU utilization
+- Optimize model loading and warm-up procedures
+
+**Phase 3: Production Readiness (Medium Impact)**
+- Add PagedAttention for efficient memory management
+- Implement dynamic batching based on queue depths
+- Add monitoring and telemetry for production deployment
+- Optimize for various GPU configurations (A100, H100, multi-GPU)
+
+**Phase 4: Advanced Features (Future)**
+- Multi-model support with automatic draft model selection
+- Adaptive speculation based on real-time performance metrics
+- Integration with serving frameworks (vLLM, Triton)
+- Hardware-aware scheduling for heterogeneous deployments
+
+### 🎯 **Expected Outcomes**
+- **10-30% improvement** in p95/p99 latency at production scale
+- **Stable performance** under high concurrency (100+ requests/sec)
+- **Reduced memory footprint** through better KV-cache management
+- **Production-grade reliability** with comprehensive error handling
+
 
 ## Performance Results
 
-Verify-PD achieves **measurable performance improvements** over baseline speculative decoding:
+Verify-PD demonstrates the **technical feasibility** of disaggregated serving with measured performance characteristics:
 
-###  **Demonstrated Results:**
-- **2.6-4.1% improvement** in p95 latency vs baseline
-- **Stable performance** under concurrent workloads
-- **GPU stream architecture** enables future operation overlapping
+### 📊 **Current Results (v0.1.0):**
+- **Small Scale (1-3 requests)**: 2.6-4.1% improvement in p95 latency
+- **Medium Scale (5-10 requests)**: -9% performance degradation due to overhead
+- **Architecture**: GPU stream-aware with proper disaggregation
+- **Limitation**: Sequential per-request processing limits scalability
+
+### 🎯 **Performance Scaling Analysis:**
+| Scale | Performance | Status |
+|-------|-------------|--------|
+| **1-3 requests** |  2.6-4.1% better | Concept proven |
+| **5-10 requests** |  -9% worse | Overhead dominant |
+| **Production (100+)** | Unknown | Requires optimization |
+
+**The current implementation proves disaggregated serving works but needs optimization for production scale.**
 - **Scalable design** with benefits increasing with concurrency
 
-### 🎯 **Key Factors for Success:**
+###  **Key Factors for Success:**
 - **Model Selection**: Fast draft model + accurate verifier (TinyLlama + Llama-2-7B)
 - **GPU Stream Design**: Architecture ready for operation overlapping
 - **Concurrency**: Benefits scale with multiple simultaneous requests
@@ -205,4 +237,6 @@ Verify-PD achieves **measurable performance improvements** over baseline specula
 
 ---
 
-**Verify-PD successfully demonstrates that disaggregated serving can outperform traditional speculative decoding approaches, establishing a foundation for next-generation LLM inference systems.** 🚀
+**Verify-PD establishes the technical foundation for disaggregated LLM serving, proving the concept works while highlighting the optimization challenges for production deployment.** 
+
+**This research demonstrates both the promise and complexity of advanced LLM inference techniques.**
