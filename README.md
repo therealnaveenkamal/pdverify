@@ -4,7 +4,7 @@ Verify-PD improves tail latency (p95/p99) in LLM inference by isolating the veri
 
 ## Latest Results (2025-12-06)
 
-** Verify-PD Successfully Demonstrates Performance Benefits!**
+Verify-PD Successfully Demonstrates Performance Benefits!
 
 | Configuration | Baseline p95 | Verify-PD p95 | Improvement |
 |---------------|--------------|---------------|-------------|
