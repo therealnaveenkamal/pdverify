@@ -19,20 +19,20 @@ Verify-PD Successfully Demonstrates Performance Benefits!
 
 ## Development History
 
-**Recent milestones (2025-12-06):**
+**Recent milestones (2025-12-05):**
 
-1. ** GPU Stream Disaggregated Serving**: Implemented synchronous GPU stream-based architecture for true operation overlapping
-2. ** Performance Verification**: Verify-PD achieves 2.6-4.1% improvement over baseline with proper model selection
-3. ** Thread Architecture Overhaul**: Replaced failed multi-threaded approach with efficient single-threaded GPU stream design
-4. ** Model Optimization**: Added performance config with TinyLlama draft + Llama-2-7B verifier for optimal speculation
-5. ** Lane Worker Threading**: Implemented dedicated worker threads for prefill/decode/verify lanes
-6. ** Scheduler Reentrancy**: Fixed deadlock issues with RLock for thread-safe concurrent access
-7. ** Concurrent Benchmarking**: Added Poisson distribution benchmarking with configurable concurrency
-8. ** GPU Stream Management**: Implemented CUDA stream awareness for future operation overlapping
-9. ** Acceptance Rate Metrics**: Added per-request and aggregate acceptance rate tracking
-10. ** Baseline Comparison**: Established comprehensive benchmarking against standard speculative decoding
+1. **GPU Stream Disaggregated Serving**: Implemented synchronous GPU stream-based architecture for true operation overlapping
+2. **Performance Verification**: Verify-PD achieves 2.6-4.1% improvement over baseline with proper model selection
+3. **Thread Architecture Overhaul**: Replaced failed multi-threaded approach with efficient single-threaded GPU stream design
+4. **Model Optimization**: Added performance config with TinyLlama draft + Llama-2-7B verifier for optimal speculation
+5. **Lane Worker Threading**: Implemented dedicated worker threads for prefill/decode/verify lanes
+6. **Scheduler Reentrancy**: Fixed deadlock issues with RLock for thread-safe concurrent access
+7. **Concurrent Benchmarking**: Added Poisson distribution benchmarking with configurable concurrency
+8. **GPU Stream Management**: Implemented CUDA stream awareness for future operation overlapping
+9. **Acceptance Rate Metrics**: Added per-request and aggregate acceptance rate tracking
+10. **Baseline Comparison**: Established comprehensive benchmarking against standard speculative decoding
 
-**Earlier milestones (2024-12-xx):**
+**Earlier milestones (2024-12-04):**
 - Initial three-lane scheduler architecture design
 - Basic speculative decoding implementation
 - Model loading and inference pipeline setup
@@ -146,27 +146,9 @@ pytest tests/test_scheduler.py -v
 -  **Benchmarking**: Comprehensive comparison tools
 -  **Model Support**: Flexible draft/verifier model configurations
 
-## Contributing
+## Optimizations - Yet to do
 
-**Help improve Verify-PD's performance!** 
-
-### 🔧 **High-Impact Areas:**
-1. **GPU Stream Overlapping**: Implement true decode/verify parallelism within requests
-2. **Async Architecture**: Convert to asyncio-based request orchestration
-3. **Batch Processing**: Add cross-request batching for better GPU utilization
-4. **Memory Optimization**: Implement PagedAttention and KV-cache sharing
-
-### 📝 **How to Contribute:**
-1. Fork the repository
-2. Implement optimizations from the roadmap above
-3. Run benchmarks with `python run_experiment.py --performance`
-4. Submit PRs with performance improvements
-
-**All contributions welcome - this is cutting-edge research in LLM serving!**
-
-## Next Steps & Future Optimizations
-
-### 🚀 **Performance Optimization Roadmap**
+### **Performance Optimization Roadmap**
 
 **Phase 1: Intra-Request Parallelism (High Impact)**
 - Implement true decode/verify overlapping within individual requests using CUDA streams
@@ -191,7 +173,7 @@ pytest tests/test_scheduler.py -v
 - Integration with serving frameworks (vLLM, Triton)
 - Hardware-aware scheduling for heterogeneous deployments
 
-### 🎯 **Expected Outcomes**
+### **Expected Outcomes**
 - **10-30% improvement** in p95/p99 latency at production scale
 - **Stable performance** under high concurrency (100+ requests/sec)
 - **Reduced memory footprint** through better KV-cache management
@@ -202,13 +184,13 @@ pytest tests/test_scheduler.py -v
 
 Verify-PD demonstrates the **technical feasibility** of disaggregated serving with measured performance characteristics:
 
-### 📊 **Current Results (v0.1.0):**
+### **Current Results (v0.1.0):**
 - **Small Scale (1-3 requests)**: 2.6-4.1% improvement in p95 latency
 - **Medium Scale (5-10 requests)**: -9% performance degradation due to overhead
 - **Architecture**: GPU stream-aware with proper disaggregation
 - **Limitation**: Sequential per-request processing limits scalability
 
-### 🎯 **Performance Scaling Analysis:**
+### **Performance Scaling Analysis:**
 | Scale | Performance | Status |
 |-------|-------------|--------|
 | **1-3 requests** |  2.6-4.1% better | Concept proven |
@@ -234,9 +216,3 @@ Verify-PD demonstrates the **technical feasibility** of disaggregated serving wi
 
 - Naveenraj Kamalakannan (nk3940)
 - Megh Panandikar (mp6545)
-
----
-
-**Verify-PD establishes the technical foundation for disaggregated LLM serving, proving the concept works while highlighting the optimization challenges for production deployment.** 
-
-**This research demonstrates both the promise and complexity of advanced LLM inference techniques.**
