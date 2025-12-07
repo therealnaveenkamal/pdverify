@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 class LaneType(IntEnum):
     """Lane types with priorities (lower value = higher priority)."""
     DECODE = 1   # Highest priority - single token generation
-    VERIFY = 2   # Medium priority - verify L draft tokens
-    PREFILL = 3  # Lowest priority - initial prompt processing
+    PREFILL = 2  # Medium priority - initial prompt processing (allows new requests to preempt verify)
+    VERIFY = 3   # Lowest priority - verify L draft tokens (can be preempted)
 
 
 class RequestState(IntEnum):
