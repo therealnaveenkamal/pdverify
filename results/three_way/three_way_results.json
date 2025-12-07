@@ -1,0 +1,337 @@
+{
+  "test_scenarios": [
+    {
+      "scenario": {
+        "name": "Single Request",
+        "num_requests": 1,
+        "max_concurrent": 1,
+        "arrival_rate": 1.0,
+        "description": "Measure per-request latency without concurrency"
+      },
+      "baseline": {
+        "total_requests": 1,
+        "successful_requests": 1,
+        "failed_requests": 0,
+        "total_time_seconds": 6.695166349411011,
+        "throughput_rps": 0.14936148675200167,
+        "latency_ms": {
+          "mean": 6695.019245147705,
+          "median": 6695.019245147705,
+          "p95": 6695.019245147705,
+          "p99": 6695.019245147705,
+          "min": 6695.019245147705,
+          "max": 6695.019245147705
+        },
+        "acceptance_ratio": {
+          "mean": 0.5555555555555556,
+          "median": 0.5555555555555556,
+          "min": 0.5555555555555556,
+          "max": 0.5555555555555556
+        }
+      },
+      "pd": {
+        "total_requests": 1,
+        "successful_requests": 1,
+        "failed_requests": 0,
+        "total_time_seconds": 6.424248933792114,
+        "throughput_rps": 0.15566021963126492,
+        "latency_ms": {
+          "mean": 6422.56760597229,
+          "median": 6422.56760597229,
+          "p95": 6422.56760597229,
+          "p99": 6422.56760597229,
+          "min": 6422.56760597229,
+          "max": 6422.56760597229
+        },
+        "acceptance_ratio": {
+          "mean": 0.5555555555555556,
+          "median": 0.5555555555555556,
+          "min": 0.5555555555555556,
+          "max": 0.5555555555555556
+        }
+      },
+      "pdverify": {
+        "total_requests": 1,
+        "successful_requests": 1,
+        "failed_requests": 0,
+        "total_time_seconds": 6.341166973114014,
+        "throughput_rps": 0.15769967960785633,
+        "latency_ms": {
+          "mean": 6341.113805770874,
+          "median": 6341.113805770874,
+          "p95": 6341.113805770874,
+          "p99": 6341.113805770874,
+          "min": 6341.113805770874,
+          "max": 6341.113805770874
+        },
+        "acceptance_ratio": {
+          "mean": 0.5555555555555556,
+          "median": 0.5555555555555556,
+          "min": 0.5555555555555556,
+          "max": 0.5555555555555556
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "Low Concurrency",
+        "num_requests": 5,
+        "max_concurrent": 3,
+        "arrival_rate": 2.0,
+        "description": "Test basic concurrent handling (2-5 requests)"
+      },
+      "baseline": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 34.193203926086426,
+        "throughput_rps": 0.14622788817357465,
+        "latency_ms": {
+          "mean": 22388.21840286255,
+          "median": 19250.246286392212,
+          "p95": 33077.53005027771,
+          "p99": 33970.002393722534,
+          "min": 14858.178615570068,
+          "max": 34193.12047958374
+        },
+        "acceptance_ratio": {
+          "mean": 0.6703339857375397,
+          "median": 0.6644736842105263,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pd": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 35.02651619911194,
+        "throughput_rps": 0.14274899540613661,
+        "latency_ms": {
+          "mean": 22649.228286743164,
+          "median": 25085.69645881653,
+          "p95": 33879.35962677002,
+          "p99": 34794.22824859619,
+          "min": 4229.7797203063965,
+          "max": 35022.945404052734
+        },
+        "acceptance_ratio": {
+          "mean": 0.6703339857375397,
+          "median": 0.6644736842105263,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pdverify": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 36.79093098640442,
+        "throughput_rps": 0.135903057246572,
+        "latency_ms": {
+          "mean": 28346.774339675903,
+          "median": 31069.61178779602,
+          "p95": 35639.19901847839,
+          "p99": 36553.09729576111,
+          "min": 13739.637851715088,
+          "max": 36781.57186508179
+        },
+        "acceptance_ratio": {
+          "mean": 0.46542692365778143,
+          "median": 0.33223684210526316,
+          "min": 0.3079268292682927,
+          "max": 0.7352941176470589
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "Medium Concurrency",
+        "num_requests": 20,
+        "max_concurrent": 10,
+        "arrival_rate": 5.0,
+        "description": "Test performance under typical load"
+      },
+      "baseline": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 152.39220762252808,
+        "throughput_rps": 0.13124030625988128,
+        "latency_ms": {
+          "mean": 90054.12431955338,
+          "median": 93775.38311481476,
+          "p95": 149678.92379760742,
+          "p99": 151842.77290344238,
+          "min": 22900.089740753174,
+          "max": 152383.73517990112
+        },
+        "acceptance_ratio": {
+          "mean": 0.5359354265487639,
+          "median": 0.5813953488372093,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pd": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 161.22834634780884,
+        "throughput_rps": 0.12404766564345407,
+        "latency_ms": {
+          "mean": 87241.32987260818,
+          "median": 87327.3503780365,
+          "p95": 155439.1216993332,
+          "p99": 160070.41120052338,
+          "min": 6156.118631362915,
+          "max": 161228.23357582092
+        },
+        "acceptance_ratio": {
+          "mean": 0.535935426548764,
+          "median": 0.5813953488372093,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pdverify": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 96.69127988815308,
+        "throughput_rps": 0.2068438852307556,
+        "latency_ms": {
+          "mean": 51165.424144268036,
+          "median": 47185.76753139496,
+          "p95": 95711.21903657913,
+          "p99": 96491.0263466835,
+          "min": 11075.421810150146,
+          "max": 96685.9781742096
+        },
+        "acceptance_ratio": {
+          "mean": 0.6271430141101259,
+          "median": 0.6827485380116959,
+          "min": 0.25773195876288657,
+          "max": 0.9196428571428571
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "High Concurrency",
+        "num_requests": 50,
+        "max_concurrent": 25,
+        "arrival_rate": 10.0,
+        "description": "Stress test and scalability"
+      },
+      "baseline": {
+        "total_requests": 50,
+        "successful_requests": 50,
+        "failed_requests": 0,
+        "total_time_seconds": 363.9755277633667,
+        "throughput_rps": 0.1373718730686387,
+        "latency_ms": {
+          "mean": 192183.64439487457,
+          "median": 189407.89830684662,
+          "p95": 361679.6657323837,
+          "p99": 363769.0835785866,
+          "min": 21357.972860336304,
+          "max": 363966.6678905487
+        },
+        "acceptance_ratio": {
+          "mean": 0.5421670566870557,
+          "median": 0.5813953488372093,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pd": {
+        "total_requests": 50,
+        "successful_requests": 50,
+        "failed_requests": 0,
+        "total_time_seconds": 380.80906081199646,
+        "throughput_rps": 0.13129939685097133,
+        "latency_ms": {
+          "mean": 193808.66674423218,
+          "median": 190777.23252773285,
+          "p95": 368157.1882247925,
+          "p99": 378743.6263871193,
+          "min": 5743.705034255981,
+          "max": 380802.3841381073
+        },
+        "acceptance_ratio": {
+          "mean": 0.5421670566870557,
+          "median": 0.5813953488372093,
+          "min": 0.25773195876288657,
+          "max": 0.8928571428571429
+        }
+      },
+      "pdverify": {
+        "total_requests": 50,
+        "successful_requests": 50,
+        "failed_requests": 0,
+        "total_time_seconds": 247.2456076145172,
+        "throughput_rps": 0.20222806173347854,
+        "latency_ms": {
+          "mean": 128181.14159107208,
+          "median": 133606.63032531738,
+          "p95": 235652.31951475143,
+          "p99": 245246.34083032608,
+          "min": 11055.468559265137,
+          "max": 247236.022233963
+        },
+        "acceptance_ratio": {
+          "mean": 0.5929133162634417,
+          "median": 0.5457331174838113,
+          "min": 0.25252525252525254,
+          "max": 0.9196428571428571
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total_scenarios": 4,
+    "pd_vs_baseline": {
+      "wins": 1,
+      "losses": 3
+    },
+    "pdverify_vs_baseline": {
+      "wins": 3,
+      "losses": 1
+    },
+    "pdverify_vs_pd": {
+      "wins": 3,
+      "losses": 1
+    },
+    "scenarios": [
+      {
+        "name": "Single Request",
+        "winner": "PD-Verify (3-lane)",
+        "baseline_p95": 6695.019245147705,
+        "pd_p95": 6422.56760597229,
+        "pdverify_p95": 6341.113805770874
+      },
+      {
+        "name": "Low Concurrency",
+        "winner": "Baseline",
+        "baseline_p95": 33077.53005027771,
+        "pd_p95": 33879.35962677002,
+        "pdverify_p95": 35639.19901847839
+      },
+      {
+        "name": "Medium Concurrency",
+        "winner": "PD-Verify (3-lane)",
+        "baseline_p95": 149678.92379760742,
+        "pd_p95": 155439.1216993332,
+        "pdverify_p95": 95711.21903657913
+      },
+      {
+        "name": "High Concurrency",
+        "winner": "PD-Verify (3-lane)",
+        "baseline_p95": 361679.6657323837,
+        "pd_p95": 368157.1882247925,
+        "pdverify_p95": 235652.31951475143
+      }
+    ]
+  }
+}

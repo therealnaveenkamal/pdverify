@@ -109,8 +109,8 @@ def get_performance_config() -> VerifyPDConfig:
     config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     config.model.verifier_model_name = "meta-llama/Llama-2-7b-hf"
     config.model.max_new_tokens = 100  # Enough tokens for speculation to shine
-    config.scheduler.batch_size = 2
-    config.scheduler.verify_micro_batch_size = 1  # Verify is more expensive
+    config.scheduler.batch_size = 4
+    config.scheduler.verify_micro_batch_size = 4  # Allow parallel verification
     return config
 
 
