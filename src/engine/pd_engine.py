@@ -2,11 +2,12 @@
 PD (Prefill-Decode) disaggregation engine.
 Two lanes: Prefill (low priority) and Decode (high priority).
 Standard speculative decoding happens in the decode lane (draft + verify together).
+NOW SUPPORTS BATCHING in the decode lane!
 """
 
 import time
 import threading
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable, Dict, List
 import logging
 import torch
 
@@ -27,7 +28,10 @@ class TwoLaneType:
 class PDEngine:
     """
     PD (Prefill-Decode) disaggregation engine.
-    Separates prefill from decode, but keeps draft+verify together in decode lane.
+    Separates prefill from decode.
+    
+    IMPROVED: Now supports BATCHED processing in the decode lane.
+             (Draft generation + Verification done for a batch of requests)
     """
 
     def __init__(self, config: VerifyPDConfig):
@@ -66,8 +70,9 @@ class PDEngine:
         
         # Config
         self.max_new_tokens = config.model.max_new_tokens
+        self.batch_size = config.scheduler.batch_size
         
-        logger.info("PDEngine initialized with 2-lane architecture")
+        logger.info(f"PDEngine initialized with 2-lane architecture and batch size {self.batch_size}")
     
     def start(self):
         """Start the engine and worker thread."""
@@ -130,9 +135,10 @@ class PDEngine:
         logger.info("Worker loop started")
         
         while self.is_running:
-            request = None
+            requests_to_process = []
+            lane_type = None
             
-            # Get request from queues (decode has priority)
+            # Get requests from queues (decode has priority)
             with self._queue_condition:
                 while self.is_running and len(self.decode_queue) == 0 and len(self.prefill_queue) == 0:
                     self._queue_condition.wait(timeout=0.1)
@@ -141,37 +147,53 @@ class PDEngine:
                     break
                 
                 # Priority: Decode > Prefill
+                # Collect batch for Decode
                 if len(self.decode_queue) > 0:
-                    request = self.decode_queue.popleft()
+                    lane_type = TwoLaneType.DECODE
+                    count = 0
+                    while len(self.decode_queue) > 0 and count < self.batch_size:
+                        requests_to_process.append(self.decode_queue.popleft())
+                        count += 1
+                
+                # If no decode work, check prefill (only process 1 prefill at a time typically to avoid blocking)
+                # But we can batch if desired. For now, let's just do 1 prefill to keep it simple and responsive.
                 elif len(self.prefill_queue) > 0:
-                    request = self.prefill_queue.popleft()
+                    lane_type = TwoLaneType.PREFILL
+                    requests_to_process.append(self.prefill_queue.popleft())
             
-            if request is None:
+            if not requests_to_process:
                 continue
             
-            # Process request based on stage
+            # Process batch based on stage
             try:
-                if request._pd_stage == TwoLaneType.PREFILL:
-                    self._handle_prefill(request)
-                elif request._pd_stage == TwoLaneType.DECODE:
-                    self._handle_decode(request)
+                if lane_type == TwoLaneType.PREFILL:
+                    # Prefill is usually memory intensive, process one by one or small batch
+                    for req in requests_to_process:
+                        self._handle_prefill(req)
+                        
+                elif lane_type == TwoLaneType.DECODE:
+                    # Batch processing for decode!
+                    self._handle_decode_batch(requests_to_process)
                     
             except Exception as e:
-                logger.error(f"Error processing request {request.request_id}: {e}")
-                request.error = str(e)
-                request.completion_time = time.time()
-                
-                # Trigger callback with error
-                with self._lock:
-                    callback = self.request_callbacks.pop(request.request_id, None)
-                
-                if callback:
-                    try:
-                        callback(request, None)
-                    except Exception as e:
-                        logger.error(f"Error in error callback: {e}")
+                logger.error(f"Error processing batch: {e}")
+                for req in requests_to_process:
+                    req.error = str(e)
+                    req.completion_time = time.time()
+                    self._trigger_callback(req, None)
         
         logger.info("Worker loop stopped")
+
+    def _trigger_callback(self, request: Request, result: Optional[str]):
+        """Helper to trigger callback."""
+        with self._lock:
+            callback = self.request_callbacks.pop(request.request_id, None)
+        
+        if callback:
+            try:
+                callback(request, result)
+            except Exception as e:
+                logger.error(f"Error in callback: {e}")
 
     def _handle_prefill(self, request: Request):
         """Handle prefill stage."""
@@ -193,124 +215,105 @@ class PDEngine:
             self.decode_queue.append(request)
             self._queue_condition.notify()
 
-    def _handle_decode(self, request: Request):
-        """Handle decode stage (draft + verify together)."""
-        # Check if we're done
-        if len(request.generated_tokens) >= self.max_new_tokens:
-            self._complete_request(request)
+    def _handle_decode_batch(self, batch: List[Request]):
+        """Handle decode stage for a batch of requests."""
+        if not batch:
             return
+
+        # Filter out completed requests (sanity check)
+        active_batch = []
+        for req in batch:
+            if len(req.generated_tokens) < self.max_new_tokens:
+                active_batch.append(req)
+            else:
+                self._complete_request(req)
         
+        if not active_batch:
+            return
+            
         # Get draft length
         draft_length = self.controller.get_draft_length()
         
-        # Generate draft tokens
-        draft_tokens = self._generate_draft(request._input_ids, draft_length)
+        # Prepare inputs
+        # We need to pad input_ids to matching length
+        input_tensors = [req._input_ids for req in active_batch]
         
-        # Verify draft tokens (standard speculative decoding)
-        accepted_tokens, num_accepted = self._verify_draft(request._input_ids, draft_tokens)
+        # Pad sequence
+        max_len = max([t.size(1) for t in input_tensors])
+        padded_inputs = []
+        pad_token_id = self.model_runner.tokenizer.pad_token_id or 0
         
-        # Update metrics
-        request.tokens_generated += len(draft_tokens)
-        request.tokens_accepted += num_accepted
+        for t in input_tensors:
+            pad_len = max_len - t.size(1)
+            if pad_len > 0:
+                # Pad left side
+                padding = torch.full((1, pad_len), pad_token_id, device=t.device, dtype=t.dtype)
+                padded_t = torch.cat([padding, t], dim=1)
+                padded_inputs.append(padded_t)
+            else:
+                padded_inputs.append(t)
         
-        with self._lock:
-            self.total_tokens_generated += len(draft_tokens)
-            self.total_tokens_accepted += num_accepted
+        batch_input_ids = torch.cat(padded_inputs, dim=0)
         
-        # Update controller
-        acceptance_ratio = num_accepted / len(draft_tokens) if draft_tokens else 0.0
-        self.controller.record_acceptance(acceptance_ratio)
+        # 1. Generate Draft Tokens (Batched)
+        draft_tokens_batch = self.model_runner.generate_draft_tokens(batch_input_ids, draft_length)
         
-        # Append accepted tokens
-        request.generated_tokens.extend(accepted_tokens)
+        # 2. Verify Tokens (Batched)
+        accepted_tokens_batch, num_accepted_list = self.model_runner.verify_tokens(batch_input_ids, draft_tokens_batch)
         
-        # Update input
-        if accepted_tokens:
-            new_ids = torch.tensor([accepted_tokens], device=self.model_runner.device, dtype=torch.long)
-            request._input_ids = torch.cat([request._input_ids, new_ids], dim=1)
+        # 3. Update Requests
+        requeue_list = []
+        
+        for i, req in enumerate(active_batch):
+            accepted_tokens = accepted_tokens_batch[i]
+            num_accepted = num_accepted_list[i]
             
-            # Check for EOS
-            if self.model_runner.tokenizer.eos_token_id in accepted_tokens:
-                self._complete_request(request)
-                return
-        
-        # Check max tokens
-        if len(request.generated_tokens) >= self.max_new_tokens:
-            self._complete_request(request)
-            return
-        
-        # Continue decoding
-        with self._queue_condition:
-            self.decode_queue.append(request)
-            self._queue_condition.notify()
-
-    def _generate_draft(self, input_ids: torch.Tensor, num_tokens: int):
-        """Generate draft tokens using small model."""
-        draft_tokens = []
-        current_ids = input_ids
-        
-        with torch.no_grad():
-            for _ in range(num_tokens):
-                outputs = self.model_runner.draft_model(current_ids)
-                logits = outputs.logits[:, -1, :]
-                next_token = torch.argmax(logits, dim=-1)
-                token_id = next_token.item()
-                
-                # Clamp to vocab size
-                if self.model_runner.draft_vocab_size is not None and token_id >= self.model_runner.draft_vocab_size:
-                    token_id = self.model_runner.draft_vocab_size - 1
-                
-                draft_tokens.append(token_id)
-                next_token_tensor = torch.tensor([[token_id]], device=current_ids.device, dtype=current_ids.dtype)
-                current_ids = torch.cat([current_ids, next_token_tensor], dim=1)
-        
-        return draft_tokens
-
-    def _verify_draft(self, input_ids: torch.Tensor, draft_tokens):
-        """Verify draft tokens using large model."""
-        draft_ids = torch.tensor([draft_tokens], device=self.model_runner.device, dtype=input_ids.dtype)
-        full_input = torch.cat([input_ids, draft_ids], dim=1)
-        
-        accepted_tokens = []
-        
-        with torch.no_grad():
-            outputs = self.model_runner.verifier_model(full_input)
-            logits = outputs.logits
+            # Update metrics
+            req.tokens_generated += len(draft_tokens_batch[i])
+            req.tokens_accepted += num_accepted
             
-            for i, draft_token in enumerate(draft_tokens):
-                logit_idx = input_ids.size(1) + i
-                if logit_idx >= logits.size(1):
-                    break
+            with self._lock:
+                self.total_tokens_generated += len(draft_tokens_batch[i])
+                self.total_tokens_accepted += num_accepted
+            
+            # Append accepted tokens
+            req.generated_tokens.extend(accepted_tokens)
+            
+            # Update input for next step
+            if accepted_tokens:
+                new_ids = torch.tensor([accepted_tokens], device=self.model_runner.device, dtype=torch.long)
+                req._input_ids = torch.cat([req._input_ids, new_ids], dim=1)
                 
-                predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
+                # Check for EOS
+                if self.model_runner.tokenizer.eos_token_id in accepted_tokens:
+                    self._complete_request(req)
+                    continue
+            
+            # Check max tokens
+            if len(req.generated_tokens) >= self.max_new_tokens:
+                self._complete_request(req)
+                continue
                 
-                # Clamp to vocab size
-                if self.model_runner.verifier_vocab_size is not None and predicted_token >= self.model_runner.verifier_vocab_size:
-                    predicted_token = self.model_runner.verifier_vocab_size - 1
-                
-                if predicted_token == draft_token:
-                    accepted_tokens.append(draft_token)
-                else:
-                    accepted_tokens.append(predicted_token)
-                    break
+            requeue_list.append(req)
+            
+        # Update controller (average acceptance)
+        if num_accepted_list:
+            avg_acceptance = sum(num_accepted_list) / (len(num_accepted_list) * draft_length) if draft_length > 0 else 0
+            self.controller.record_acceptance(avg_acceptance)
         
-        return accepted_tokens, len(accepted_tokens)
+        # Requeue active requests
+        if requeue_list:
+            with self._queue_condition:
+                for req in requeue_list:
+                    self.decode_queue.append(req)
+                self._queue_condition.notify()
 
     def _complete_request(self, request: Request):
         """Complete a request."""
         # Decode result
         result_text = self.model_runner.tokenizer.decode(request.generated_tokens, skip_special_tokens=True)
         request.completion_time = time.time()
-        
-        # Trigger callback
-        with self._lock:
-            callback = self.request_callbacks.pop(request.request_id, None)
-        
-        if callback:
-            try:
-                callback(request, result_text)
-            except Exception as e:
-                logger.error(f"Error in callback for {request.request_id}: {e}")
+        self._trigger_callback(request, result_text)
 
     def __enter__(self):
         """Context manager entry."""

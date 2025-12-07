@@ -2,22 +2,22 @@
 
 **Verify-PD** is a high-performance serving system for LLM speculative decoding that isolates the verification step into a dedicated execution lane. By disaggregating **Prefill, Decode, and Verify** into three priority lanes and applying **batched verification**, Verify-PD achieves significant performance gains over standard speculative decoding at scale.
 
-## 🚀 Key Results
+## Key Results
 
 **PD-Verify (3-lane)** conclusively outperforms both standard Speculative Decoding and 2-lane (Prefill-Decode) disaggregation for concurrent workloads.
 
 | Scenario | Metric | Improvement vs Baseline |
 |----------|--------|-------------------------|
-| **Medium Concurrency** (20 reqs) | P95 Latency | **-36% Latency Reduction** 📉 |
-| **Medium Concurrency** (20 reqs) | Throughput | **+58% Higher Throughput** 🚀 |
-| **High Concurrency** (50 reqs) | P95 Latency | **-34% Latency Reduction** 📉 |
-| **High Concurrency** (50 reqs) | Throughput | **+47% Higher Throughput** 🚀 |
+| **Medium Concurrency** (20 reqs) | P95 Latency | **-36% Latency Reduction** |
+| **Medium Concurrency** (20 reqs) | Throughput | **+58% Higher Throughput** |
+| **High Concurrency** (50 reqs) | P95 Latency | **-34% Latency Reduction** |
+| **High Concurrency** (50 reqs) | Throughput | **+47% Higher Throughput** |
 
 > **Verdict:** Verify-PD is the optimal architecture for production-scale speculative decoding serving.
 
 ---
 
-## 🏗️ The Architecture: 3-Lane Disaggregation
+## The Architecture: 3-Lane Disaggregation
 
 Verify-PD moves beyond simple Prefill/Decode separation by introducing a **dedicated Verify Lane**.
 
@@ -35,7 +35,7 @@ The critical innovation is **Verify Lane Batching**.
 
 ---
 
-## 📊 Comprehensive Benchmarks
+## Comprehensive Benchmarks
 
 We conducted a fair, apples-to-apples comparison of three systems under identical conditions (A100 GPU):
 
@@ -49,12 +49,12 @@ We conducted a fair, apples-to-apples comparison of three systems under identica
 |----------|--------------|-----------------|----------------------------|--------|
 | **Single Request** | 6,695 ms | 6,423 ms | **6,341 ms** | **PD-Verify** |
 | **Low Concurrency** (5 reqs) | **33,078 ms** | 33,879 ms | 35,639 ms | **Baseline** |
-| **Medium Concurrency** (20 reqs) | 149,679 ms | 155,439 ms | **95,711 ms** | **PD-Verify** 🏆 |
-| **High Concurrency** (50 reqs) | 361,680 ms | 368,157 ms | **235,652 ms** | **PD-Verify** 🏆 |
+| **Medium Concurrency** (20 reqs) | 149,679 ms | 155,439 ms | **95,711 ms** | **PD-Verify** |
+| **High Concurrency** (50 reqs) | 361,680 ms | 368,157 ms | **235,652 ms** | **PD-Verify** |
 
 ---
 
-## 💡 Failure Mode Analysis
+## Failure Mode Analysis
 
 Why does PD-Verify win? And when does it fail?
 
@@ -75,7 +75,7 @@ In our tests, **PD (2-lane) never beat the baseline.**
 
 ---
 
-## 🛠️ Usage
+## Usage
 
 ### Installation
 ```bash
@@ -103,6 +103,6 @@ Edit `src/utils/config.py` to tune:
 
 ---
 
-## 👥 Authors
+## Authors
 *   Naveenraj Kamalakannan (nk3940)
 *   Megh Panandikar (mp6545)
