@@ -20,7 +20,7 @@
 |----------|----------|-------------|------------------------|---------|
 | **Single Request** | 6,695 ms | 6,423 ms | **6,341 ms** ✅ | PD-Verify |
 | **Low Concurrency** (5 reqs) | **33,078 ms** ✅ | 33,879 ms | 35,639 ms | Baseline |
-| **Medium Concurrency** (20 reqs) | 149,679 ms | 155,439 ms | **95,711 ms** ✅ | **PD-Verify** |
+| **Medium Concurrency** (20 reqs) | 113,624 ms | 123,209 ms | **95,711 ms** ✅ | **PD-Verify** |
 | **High Concurrency** (50 reqs) | 361,680 ms | 368,157 ms | **235,652 ms** ✅ | **PD-Verify** |
 
 ### Throughput (Higher is Better)
@@ -49,15 +49,15 @@
 ### 3. Medium Concurrency (20 requests, 10 concurrent) ⭐
 - **Winner:** PD-Verify by a large margin
 - **Analysis:**
-  - PD (2-lane): **-3.8%** worse than baseline (still overhead-bound)
-  - PD-Verify (3-lane): **+36.1% better** than baseline! 🚀
-  - **PD-Verify is 38.4% better than PD (2-lane)**
+  - PD (2-lane): **-8.4%** worse than baseline (even with batching)
+  - PD-Verify (3-lane): **+15.7% better** than baseline! 🚀
+  - **PD-Verify is 22.3% better than PD (2-lane)**
 - **Conclusion:** The Verify lane separation is **crucial** for performance at scale
 
 ### 4. High Concurrency (50 requests, 25 concurrent) ⭐⭐
 - **Winner:** PD-Verify by a huge margin
 - **Analysis:**
-  - PD (2-lane): **-1.8%** worse than baseline (overhead without batching benefits)
+  - PD (2-lane): **-1.8%** worse than baseline
   - PD-Verify (3-lane): **+34.8% better** than baseline! 🚀🚀
   - **PD-Verify is 36.0% better than PD (2-lane)**
   - **47% throughput improvement** over baseline
@@ -65,12 +65,12 @@
 
 ## Why PD (2-lane) Doesn't Help
 
-**Critical Insight:** Simply separating Prefill and Decode (PD) **does not improve performance** and actually **hurts latency** in all scenarios.
+**Critical Insight:** Simply separating Prefill and Decode (PD) **does not improve performance** and actually **hurts latency** in most scenarios.
 
 **Reasons:**
-1. **No batching benefit:** Draft and verify still executed sequentially per request
-2. **Queue overhead:** Adding lane management without batching just adds overhead
-3. **No GPU optimization:** Single-request decode lane doesn't utilize GPU efficiently
+1.  **Coupled Execution:** Draft and verify are still executed sequentially per batch.
+2.  **No Pipeline Overlap:** Cannot verify batch A while decoding batch B.
+3.  **Queue Overhead:** Lane management cost > small batching benefit.
 
 **The Verify lane is not just an optimization—it's essential!**
 
@@ -123,7 +123,7 @@
 
 This three-way comparison definitively shows:
 
-1. **Disaggregation alone doesn't help** (PD ≈ Baseline)
+1. **Disaggregation alone doesn't help** (PD ≈ Baseline or worse)
 2. **The Verify lane is critical** (PD-Verify >> PD)
 3. **Batched verification is the key innovation** (36-38% improvement over 2-lane)
 

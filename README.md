@@ -8,7 +8,7 @@
 
 | Scenario | Metric | Improvement vs Baseline |
 |----------|--------|-------------------------|
-| **Medium Concurrency** (20 reqs) | P95 Latency | **-36% Latency Reduction** |
+| **Medium Concurrency** (20 reqs) | P95 Latency | **-16% Latency Reduction** |
 | **Medium Concurrency** (20 reqs) | Throughput | **+58% Higher Throughput** |
 | **High Concurrency** (50 reqs) | P95 Latency | **-34% Latency Reduction** |
 | **High Concurrency** (50 reqs) | Throughput | **+47% Higher Throughput** |
@@ -49,7 +49,7 @@ We conducted a fair, apples-to-apples comparison of three systems under identica
 |----------|--------------|-----------------|----------------------------|--------|
 | **Single Request** | 6,695 ms | 6,423 ms | **6,341 ms** | **PD-Verify** |
 | **Low Concurrency** (5 reqs) | **33,078 ms** | 33,879 ms | 35,639 ms | **Baseline** |
-| **Medium Concurrency** (20 reqs) | 149,679 ms | 155,439 ms | **95,711 ms** | **PD-Verify** |
+| **Medium Concurrency** (20 reqs) | 113,624 ms | 123,209 ms | **95,711 ms** | **PD-Verify** |
 | **High Concurrency** (50 reqs) | 361,680 ms | 368,157 ms | **235,652 ms** | **PD-Verify** |
 
 ---
@@ -59,9 +59,8 @@ We conducted a fair, apples-to-apples comparison of three systems under identica
 Why does PD-Verify win? And when does it fail?
 
 ### 1. Why PD (2-lane) Fails
-You might think separating Prefill and Decode is enough. **It is not.**
-In our tests, **PD (2-lane) never beat the baseline.**
-*   **Reason:** Without a separate Verify lane, draft and verify operations remain coupled. You cannot batch verification across requests without stalling individual decode steps. You pay the overhead of lane management without reaping the benefits of batching.
+Even with batching enabled, **PD (2-lane) trails the baseline.**
+*   **Reason:** Without a separate Verify lane, draft and verify operations are coupled in a single step. Even though we batch decode steps, the lock-step nature prevents overlapping decode of Request A with verify of Request B. You pay the overhead of lane management without the pipeline parallelism benefits.
 
 ### 2. Failure Mode: Low Concurrency (<5 requests)
 *   **Observation:** PD-Verify is ~7% slower than baseline at low load.
