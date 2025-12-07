@@ -171,9 +171,11 @@ class PoissonBenchmark:
                 time.sleep(benchmark_req.arrival_time - current_time)
 
             # Enforce concurrency limit - wait for a slot
-            with active_count_lock:
-                while active_count >= max_concurrent:
-                    time.sleep(0.01)  # Release lock and wait
+            while True:
+                with active_count_lock:
+                    if active_count < max_concurrent:
+                        break
+                time.sleep(0.01)  # Sleep WITHOUT holding the lock
 
             # Submit request
             engine_req = Request(
