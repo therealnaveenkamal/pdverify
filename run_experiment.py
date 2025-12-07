@@ -181,7 +181,7 @@ def run_verifypd_benchmark(config, prompts, num_requests, arrival_rate, max_conc
     logger.info("=" * 80)
     logger.info("Running VERIFY-PD Speculative Decoding")
     logger.info("=" * 80)
-    
+
     # Create Poisson benchmark
     benchmark = PoissonBenchmark(
         prompts=prompts,
@@ -189,10 +189,10 @@ def run_verifypd_benchmark(config, prompts, num_requests, arrival_rate, max_conc
         num_requests=num_requests,
         seed=42
     )
-    
-    # Run benchmark
+
+    # Run benchmark with no_delay=True for fair comparison with baseline
     with SpeculativeEngine(config) as engine:
-        results = benchmark.run_benchmark(engine, max_concurrent=max_concurrent)
+        results = benchmark.run_benchmark(engine, max_concurrent=max_concurrent, no_delay=True)
 
     # Check for errors
     if "error" in results:

@@ -80,7 +80,7 @@ class WorkerThread(threading.Thread):
 
                 if task is None:
                     # No work available, small sleep to avoid busy-wait
-                    time.sleep(0.001)
+                    time.sleep(0.0001)  # Reduced from 0.001 for better responsiveness
                     continue
 
                 # Execute appropriate stage

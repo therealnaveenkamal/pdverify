@@ -94,7 +94,7 @@ class PoissonBenchmark:
         logger.info(f"Generated {len(requests)} requests over {current_time:.1f} seconds")
         return requests
     
-    def run_benchmark(self, engine, requests: Optional[List[BenchmarkRequest]] = None, max_concurrent: int = 5):
+    def run_benchmark(self, engine, requests: Optional[List[BenchmarkRequest]] = None, max_concurrent: int = 5, no_delay: bool = False):
         """
         Run benchmark on an engine with concurrent request processing.
         Respects Poisson arrival times and enforces max_concurrent limit.
@@ -103,6 +103,7 @@ class PoissonBenchmark:
             engine: Engine to test (must have submit_request_async method)
             requests: Pre-generated requests, or None to generate
             max_concurrent: Maximum number of concurrent requests
+            no_delay: If True, ignore arrival times and submit as fast as possible (for fair comparison with baseline)
 
         Returns:
             Benchmark results
@@ -166,8 +167,8 @@ class PoissonBenchmark:
             current_time = time.time() - benchmark_start
             benchmark_req = requests[request_idx]
 
-            # Wait until arrival time
-            if benchmark_req.arrival_time > current_time:
+            # Wait until arrival time (unless no_delay mode)
+            if not no_delay and benchmark_req.arrival_time > current_time:
                 time.sleep(benchmark_req.arrival_time - current_time)
 
             # Enforce concurrency limit - wait for a slot
@@ -175,7 +176,7 @@ class PoissonBenchmark:
                 with active_count_lock:
                     if active_count < max_concurrent:
                         break
-                time.sleep(0.01)  # Sleep WITHOUT holding the lock
+                time.sleep(0.001)  # Reduced from 0.01 for faster response
 
             # Submit request
             engine_req = Request(
@@ -214,7 +215,7 @@ class PoissonBenchmark:
         # Wait for all requests to complete
         logger.info(f"All requests submitted, waiting for completion...")
         while active_count > 0:
-            time.sleep(0.01)
+            time.sleep(0.001)  # Reduced from 0.01 for faster completion detection
 
         total_time = time.time() - benchmark_start
         logger.info(f"Benchmark completed in {total_time:.1f} seconds")

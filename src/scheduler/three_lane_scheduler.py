@@ -77,15 +77,15 @@ class ThreeLaneScheduler:
         """
         Get next single task from highest priority non-empty lane.
         Used by worker thread for stage-based async processing.
-        Priority: DECODE (1) > PREFILL (2) > VERIFY (3)
-        This allows new requests to preempt verification!
+        Priority: DECODE (1) > VERIFY (2) > PREFILL (3)
+        This avoids VERIFY starvation.
 
         Returns:
             Single request from highest priority lane, or None if no work
         """
         with self._lock:
             # Check lanes in priority order (lower number = higher priority)
-            priority_order = [LaneType.DECODE, LaneType.PREFILL, LaneType.VERIFY]
+            priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
 
             for lane_type in priority_order:
                 lane = self.lanes[lane_type]
@@ -100,14 +100,14 @@ class ThreeLaneScheduler:
     def get_next_batch(self) -> Optional[List[Request]]:
         """
         Get next batch of requests following priority order.
-        Priority: DECODE > PREFILL > VERIFY
+        Priority: DECODE > VERIFY > PREFILL
 
         Returns:
             Batch of requests from highest priority non-empty lane
         """
         with self._lock:
             # Check lanes in priority order
-            priority_order = [LaneType.DECODE, LaneType.PREFILL, LaneType.VERIFY]
+            priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
 
             for lane_type in priority_order:
                     lane = self.lanes[lane_type]
