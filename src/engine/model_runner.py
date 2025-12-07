@@ -108,19 +108,20 @@ class ModelRunner:
         input_ids: torch.Tensor,
         num_tokens: int,
         stream_id: Optional[int] = None
-    ) -> List[int]:
+    ) -> List[List[int]]:
         """
-        Generate draft tokens using small model.
+        Generate draft tokens using small model for a batch.
         
         Args:
-            input_ids: Input token IDs
+            input_ids: Input token IDs [batch_size, seq_len]
             num_tokens: Number of tokens to generate
             stream_id: CUDA stream ID if using streams
             
         Returns:
-            List of generated token IDs
+            List of List of generated token IDs (one list per sequence in batch)
         """
-        draft_tokens = []
+        batch_size = input_ids.shape[0]
+        draft_tokens_batch = [[] for _ in range(batch_size)]
         current_ids = input_ids.to(torch.long)
         
         # Get CUDA stream if available
@@ -131,77 +132,97 @@ class ModelRunner:
         # Use stream context if available
         with self._draft_lock:
             with torch.no_grad():
-                if stream is not None:
-                    with torch.cuda.stream(stream):
-                        for _ in range(num_tokens):
-                            outputs = self.draft_model(current_ids)
-                            logits = outputs.logits[:, -1, :]
-                            next_token = torch.argmax(logits, dim=-1)
-                            token_id = next_token.item()
-                            if self.draft_vocab_size is not None and token_id >= self.draft_vocab_size:
-                                token_id = self.draft_vocab_size - 1
-                            draft_tokens.append(token_id)
-                            token_tensor = torch.tensor([[token_id]], device=current_ids.device, dtype=current_ids.dtype)
-                            current_ids = torch.cat([current_ids, token_tensor], dim=1)
-                    stream.synchronize()
-                else:
+                ctx = torch.cuda.stream(stream) if stream is not None else(
+                      torch.nullcontext() if hasattr(torch, "nullcontext") else torch.no_grad())
+                
+                with ctx:
                     for _ in range(num_tokens):
                         outputs = self.draft_model(current_ids)
-                        logits = outputs.logits[:, -1, :]
-                        next_token = torch.argmax(logits, dim=-1)
-                        token_id = next_token.item()
-                        if self.draft_vocab_size is not None and token_id >= self.draft_vocab_size:
-                            token_id = self.draft_vocab_size - 1
-                        draft_tokens.append(token_id)
-                        token_tensor = torch.tensor([[token_id]], device=current_ids.device, dtype=current_ids.dtype)
-                        current_ids = torch.cat([current_ids, token_tensor], dim=1)
+                        logits = outputs.logits[:, -1, :] # [batch, vocab]
+                        next_tokens = torch.argmax(logits, dim=-1) # [batch]
+                        
+                        # Process each sequence in batch
+                        token_tensor_list = []
+                        for i, token_id in enumerate(next_tokens):
+                            tid = token_id.item()
+                            if self.draft_vocab_size is not None and tid >= self.draft_vocab_size:
+                                tid = self.draft_vocab_size - 1
+                            draft_tokens_batch[i].append(tid)
+                            token_tensor_list.append([tid])
+                        
+                        # Append to current_ids
+                        new_tokens = torch.tensor(token_tensor_list, device=current_ids.device, dtype=current_ids.dtype)
+                        current_ids = torch.cat([current_ids, new_tokens], dim=1)
+                        
+                    if stream is not None:
+                        stream.synchronize()
         
-        return draft_tokens
+        return draft_tokens_batch
     
     def verify_tokens(
         self,
         input_ids: torch.Tensor,
-        draft_tokens: List[int],
+        draft_tokens_batch: List[List[int]],
         stream_id: Optional[int] = None
-    ) -> tuple[List[int], int]:
+    ) -> tuple[List[List[int]], List[int]]:
         """
-        Verify draft tokens using large model.
+        Verify draft tokens using large model for a batch.
         
         Args:
-            input_ids: Original input token IDs
-            draft_tokens: Draft tokens to verify
+            input_ids: Original input token IDs [batch_size, seq_len]
+            draft_tokens_batch: List of draft token lists for each request
             stream_id: CUDA stream ID if using streams
             
         Returns:
-            Tuple of (accepted_tokens, num_accepted)
+            Tuple of (accepted_tokens_batch, num_accepted_list)
         """
+        batch_size = input_ids.shape[0]
+        if len(draft_tokens_batch) != batch_size:
+            raise ValueError(f"Batch size mismatch: input {batch_size}, drafts {len(draft_tokens_batch)}")
+
         # Get CUDA stream if available
         stream = None
         if stream_id is not None and self.stream_manager:
             stream = self.stream_manager.get_stream(stream_id)
 
-        # Ensure integer type
-        input_ids = input_ids.to(torch.long)
-
-        # Create input with draft tokens
-        draft_ids = torch.tensor([draft_tokens], device=self.device, dtype=torch.long)
+        # Create input with draft tokens (assuming equal length drafts for batching efficiency)
+        # Note: In a real system we needs ragged batching, here we pad or assume same draft length
+        max_draft_len = max(len(d) for d in draft_tokens_batch)
+        
+        # Pad drafts to max length for tensor creation
+        padded_drafts = []
+        for d in draft_tokens_batch:
+            padded = d + [self.tokenizer.pad_token_id or 0] * (max_draft_len - len(d))
+            padded_drafts.append(padded)
+            
+        draft_ids = torch.tensor(padded_drafts, device=self.device, dtype=torch.long)
         full_input = torch.cat([input_ids, draft_ids], dim=1)
 
-        accepted_tokens = []
+        accepted_tokens_batch = []
+        num_accepted_list = []
 
         # Use stream context if available
         with self._verifier_lock:
             with torch.no_grad():
-                if stream is not None:
-                    with torch.cuda.stream(stream):
-                        outputs = self.verifier_model(full_input)
-                        logits = outputs.logits
+                ctx = torch.cuda.stream(stream) if stream is not None else (
+                      torch.nullcontext() if hasattr(torch, "nullcontext") else torch.no_grad())
+                
+                with ctx:
+                    outputs = self.verifier_model(full_input)
+                    logits = outputs.logits # [batch, seq_len, vocab]
 
-                        for i, draft_token in enumerate(draft_tokens):
+                    for b in range(batch_size):
+                        accepted_tokens = []
+                        curr_draft_tokens = draft_tokens_batch[b]
+                        
+                        for i, draft_token in enumerate(curr_draft_tokens):
                             logit_idx = input_ids.size(1) + i
                             if logit_idx >= logits.size(1):
                                 break
-                            predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
+                                
+                            pred_logits = logits[b, logit_idx, :]
+                            predicted_token = torch.argmax(pred_logits, dim=-1).item()
+                            
                             if self.verifier_vocab_size is not None and predicted_token >= self.verifier_vocab_size:
                                 predicted_token = self.verifier_vocab_size - 1
 
@@ -210,26 +231,14 @@ class ModelRunner:
                             else:
                                 accepted_tokens.append(predicted_token)
                                 break
-                    stream.synchronize()
-                else:
-                    outputs = self.verifier_model(full_input)
-                    logits = outputs.logits
+                        
+                        accepted_tokens_batch.append(accepted_tokens)
+                        num_accepted_list.append(len(accepted_tokens))
 
-                    for i, draft_token in enumerate(draft_tokens):
-                        logit_idx = input_ids.size(1) + i
-                        if logit_idx >= logits.size(1):
-                            break
-                        predicted_token = torch.argmax(logits[:, logit_idx, :], dim=-1).item()
-                        if self.verifier_vocab_size is not None and predicted_token >= self.verifier_vocab_size:
-                            predicted_token = self.verifier_vocab_size - 1
-
-                        if predicted_token == draft_token:
-                            accepted_tokens.append(draft_token)
-                        else:
-                            accepted_tokens.append(predicted_token)
-                            break
+                    if stream is not None:
+                        stream.synchronize()
         
-        return accepted_tokens, len(accepted_tokens)
+        return accepted_tokens_batch, num_accepted_list
     
     def prefill(
         self,
