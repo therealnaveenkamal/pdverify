@@ -44,11 +44,11 @@ class ModelComparisonBenchmark:
                 "verifier": "Qwen/Qwen2-7B",
                 "color": "green"
             },
-            "Llama3": {
-                "draft": "meta-llama/Llama-3.2-1B",
-                "verifier": "meta-llama/Meta-Llama-3-8B",
-                "color": "orange"
-            },
+            # "Llama3": {
+            #     "draft": "meta-llama/Llama-3.2-1B",
+            #     "verifier": "meta-llama/Meta-Llama-3-8B",
+            #     "color": "orange"
+            # },
             "Gemma": {
                 "draft": "google/gemma-2b",
                 "verifier": "google/gemma-7b",
