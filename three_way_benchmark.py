@@ -50,20 +50,20 @@ class ThreeWayBenchmark:
         
         # Test scenarios
         scenarios = [
-            {
-                "name": "Single Request",
-                "num_requests": 1,
-                "max_concurrent": 1,
-                "arrival_rate": 1.0,
-                "description": "Measure per-request latency without concurrency"
-            },
-            {
-                "name": "Low Concurrency",
-                "num_requests": 5,
-                "max_concurrent": 3,
-                "arrival_rate": 2.0,
-                "description": "Test basic concurrent handling (2-5 requests)"
-            },
+            # {
+            #     "name": "Single Request",
+            #     "num_requests": 1,
+            #     "max_concurrent": 1,
+            #     "arrival_rate": 1.0,
+            #     "description": "Measure per-request latency without concurrency"
+            # },
+            # {
+            #     "name": "Low Concurrency",
+            #     "num_requests": 5,
+            #     "max_concurrent": 3,
+            #     "arrival_rate": 2.0,
+            #     "description": "Test basic concurrent handling (2-5 requests)"
+            # },
             {
                 "name": "Medium Concurrency",
                 "num_requests": 20,

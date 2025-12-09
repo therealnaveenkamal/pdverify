@@ -149,10 +149,18 @@ class PoissonBenchmark:
                 results.append(result)
                 logger.debug(f"Completed {benchmark_req.request_id} in {latency_ms:.1f}ms")
 
-        # Submit all requests (the engine handles concurrency internally)
+        # Submit requests at their Poisson arrival times (asynchronously)
+        benchmark_start = start_time
+
         while request_idx < len(remaining_requests):
             benchmark_req = remaining_requests[request_idx]
             request_idx += 1
+
+            # Wait until this request's arrival time
+            target_time = benchmark_start + benchmark_req.arrival_time
+            sleep_duration = target_time - time.time()
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
 
             engine_req = Request(
                 request_id=benchmark_req.request_id,
@@ -165,7 +173,8 @@ class PoissonBenchmark:
             try:
                 active_requests[benchmark_req.request_id] = (benchmark_req, req_start)
                 engine.submit_request_async(engine_req, callback=completion_callback)
-                logger.debug(f"Submitted {benchmark_req.request_id}")
+                actual_time = time.time() - benchmark_start
+                logger.debug(f"Submitted {benchmark_req.request_id} at t={actual_time:.3f}s (scheduled: {benchmark_req.arrival_time:.3f}s)")
             except Exception as e:
                 logger.error(f"Error submitting {benchmark_req.request_id}: {e}")
                 with result_lock:

@@ -13,8 +13,10 @@ class ModelConfig:
     verifier_model_name: str = "meta-llama/Llama-2-7b-hf"
     max_model_len: int = 2048
     max_new_tokens: int = 100  # Maximum tokens to generate per request
-    dtype: str = "auto"  # auto, float16, bfloat16
+    # Use bfloat16 by default on GPU to cut memory footprint; fall back to float32 on CPU.
+    dtype: str = "bfloat16"  # auto, float16, bfloat16
     trust_remote_code: bool = False
+    hf_token: Optional[str] = None  # HuggingFace access token for gated models
 
 
 @dataclass

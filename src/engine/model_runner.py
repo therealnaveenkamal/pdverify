@@ -6,7 +6,7 @@ import torch
 import threading
 from typing import List, Dict, Optional, Any
 import logging
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from ..utils.config import ModelConfig, HardwareConfig
 from ..utils.stream_manager import StreamManager
@@ -58,32 +58,57 @@ class ModelRunner:
     def load_models(self):
         """Load draft and verifier models."""
         logger.info("Loading models...")
-        
+
+        # Get token from config
+        token = self.model_config.hf_token
+
         # Load tokenizer (shared between models)
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.draft_model_name,
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
         )
-        
+
         # Ensure tokenizer has pad token
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
+
         # Load draft model
         logger.info(f"Loading draft model: {self.model_config.draft_model_name}")
+        # Prepare config to strip incompatible rope_scaling for Llama-family models on older transformers
+        draft_config = AutoConfig.from_pretrained(
+            self.model_config.draft_model_name,
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
+        )
+        if hasattr(draft_config, "rope_scaling") and "llama" in self.model_config.draft_model_name.lower():
+            draft_config.rope_scaling = None
+
         self.draft_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.draft_model_name,
+            config=draft_config,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
         ).to(self.device)
         self.draft_model.eval()
-        
+
         # Load verifier model
         logger.info(f"Loading verifier model: {self.model_config.verifier_model_name}")
+        verifier_config = AutoConfig.from_pretrained(
+            self.model_config.verifier_model_name,
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
+        )
+        if hasattr(verifier_config, "rope_scaling") and "llama" in self.model_config.verifier_model_name.lower():
+            verifier_config.rope_scaling = None
+
         self.verifier_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.verifier_model_name,
+            config=verifier_config,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
         ).to(self.device)
         self.verifier_model.eval()
 
@@ -96,12 +121,15 @@ class ModelRunner:
     
     def _get_dtype(self) -> torch.dtype:
         """Get torch dtype from config."""
-        if self.model_config.dtype == "float16":
+        dtype = self.model_config.dtype.lower()
+        if dtype == "float16":
             return torch.float16
-        elif self.model_config.dtype == "bfloat16":
+        if dtype == "bfloat16":
             return torch.bfloat16
-        else:
-            return torch.float32
+        # "auto" or unknown: prefer half precision on GPU, fall back to fp32 on CPU
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            return torch.float16
+        return torch.float32
     
     def generate_draft_tokens(
         self,
@@ -274,8 +302,14 @@ class ModelRunner:
         """Clean up resources."""
         if self.draft_model is not None:
             del self.draft_model
+            self.draft_model = None
         if self.verifier_model is not None:
             del self.verifier_model
+            self.verifier_model = None
+        if self.tokenizer is not None:
+            del self.tokenizer
+            self.tokenizer = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all CUDA operations complete
         logger.info("Cleaned up models")

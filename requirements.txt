@@ -23,3 +23,6 @@ python-dotenv>=1.0.0
 
 # Dataset handling
 datasets>=2.14.0
+
+# Visualization
+matplotlib>=3.7.0
