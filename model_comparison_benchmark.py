@@ -22,6 +22,9 @@ from src.utils import VerifyPDConfig, ModelConfig, get_performance_config
 from src.engine import BaselineEngine, SpeculativeEngine
 from src.benchmark.poisson_benchmark import PoissonBenchmark, get_sharegpt_prompts
 
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class ModelComparisonBenchmark:
     """Benchmark comparing Baseline vs VerifyPD across different models."""
