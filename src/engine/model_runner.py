@@ -58,32 +58,38 @@ class ModelRunner:
     def load_models(self):
         """Load draft and verifier models."""
         logger.info("Loading models...")
-        
+
+        # Get token from config
+        token = self.model_config.hf_token
+
         # Load tokenizer (shared between models)
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.draft_model_name,
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token
         )
-        
+
         # Ensure tokenizer has pad token
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
+
         # Load draft model
         logger.info(f"Loading draft model: {self.model_config.draft_model_name}")
         self.draft_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.draft_model_name,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token
         ).to(self.device)
         self.draft_model.eval()
-        
+
         # Load verifier model
         logger.info(f"Loading verifier model: {self.model_config.verifier_model_name}")
         self.verifier_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.verifier_model_name,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.model_config.trust_remote_code
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token
         ).to(self.device)
         self.verifier_model.eval()
 

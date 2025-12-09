@@ -15,6 +15,7 @@ class ModelConfig:
     max_new_tokens: int = 100  # Maximum tokens to generate per request
     dtype: str = "auto"  # auto, float16, bfloat16
     trust_remote_code: bool = False
+    hf_token: Optional[str] = None  # HuggingFace access token for gated models
 
 
 @dataclass
