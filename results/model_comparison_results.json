@@ -1,0 +1,314 @@
+{
+  "TinyLlama": [
+    {
+      "scenario": {
+        "name": "Low Concurrency",
+        "num_requests": 5,
+        "max_concurrent": 3,
+        "arrival_rate": 2.0
+      },
+      "model": "TinyLlama",
+      "baseline": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 46.78649854660034,
+        "throughput_rps": 0.10686843759038506,
+        "latency_ms": {
+          "mean": 34634.593057632446,
+          "median": 33436.26403808594,
+          "p95": 42274.53327178955,
+          "p99": 43532.47013092041,
+          "min": 29253.320455551147,
+          "max": 43846.954345703125
+        },
+        "acceptance_ratio": {
+          "mean": 0.4697057684862562,
+          "median": 0.44642857142857145,
+          "min": 0.3048780487804878,
+          "max": 0.5952380952380952
+        }
+      },
+      "verifypd": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 17.420317888259888,
+        "throughput_rps": 0.2870211687336464,
+        "latency_ms": {
+          "mean": 11754.585599899292,
+          "median": 11111.517429351807,
+          "p95": 15235.709428787231,
+          "p99": 15583.818292617798,
+          "min": 8383.558750152588,
+          "max": 15670.84550857544
+        },
+        "acceptance_ratio": {
+          "mean": 0.6133566629339305,
+          "median": 0.5319148936170213,
+          "min": 0.44642857142857145,
+          "max": 0.9196428571428571
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "Medium Concurrency",
+        "num_requests": 20,
+        "max_concurrent": 10,
+        "arrival_rate": 5.0
+      },
+      "model": "TinyLlama",
+      "baseline": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 175.630056142807,
+        "throughput_rps": 0.11387572514204373,
+        "latency_ms": {
+          "mean": 104321.59202098846,
+          "median": 110382.50195980072,
+          "p95": 168432.62292146683,
+          "p99": 171266.67042016983,
+          "min": 29324.586153030396,
+          "max": 171975.18229484558
+        },
+        "acceptance_ratio": {
+          "mean": 0.49312470219482407,
+          "median": 0.4807692307692308,
+          "min": 0.265625,
+          "max": 0.8928571428571429
+        }
+      },
+      "verifypd": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 49.73890733718872,
+        "throughput_rps": 0.402099705657314,
+        "latency_ms": {
+          "mean": 27213.2506608963,
+          "median": 27469.41125392914,
+          "p95": 46164.57452774048,
+          "p99": 46249.859409332275,
+          "min": 7844.583749771118,
+          "max": 46271.180629730225
+        },
+        "acceptance_ratio": {
+          "mean": 0.6343588367356782,
+          "median": 0.6677631578947368,
+          "min": 0.29705882352941176,
+          "max": 0.9196428571428571
+        }
+      }
+    }
+  ],
+  "Qwen": [
+    {
+      "scenario": {
+        "name": "Low Concurrency",
+        "num_requests": 5,
+        "max_concurrent": 3,
+        "arrival_rate": 2.0
+      },
+      "model": "Qwen",
+      "baseline": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 37.41484332084656,
+        "throughput_rps": 0.13363680176669704,
+        "latency_ms": {
+          "mean": 27747.19409942627,
+          "median": 28546.653747558594,
+          "p95": 33758.936405181885,
+          "p99": 34324.69930648804,
+          "min": 18124.666929244995,
+          "max": 34466.140031814575
+        },
+        "acceptance_ratio": {
+          "mean": 0.5561630094043888,
+          "median": 0.51,
+          "min": 0.43103448275862066,
+          "max": 0.8706896551724138
+        }
+      },
+      "verifypd": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 16.737020015716553,
+        "throughput_rps": 0.29873896280848405,
+        "latency_ms": {
+          "mean": 10933.123350143433,
+          "median": 10131.550788879395,
+          "p95": 14375.023365020752,
+          "p99": 14867.153644561768,
+          "min": 7917.525053024292,
+          "max": 14990.186214447021
+        },
+        "acceptance_ratio": {
+          "mean": 0.6992004165969682,
+          "median": 0.6756756756756757,
+          "min": 0.4951923076923077,
+          "max": 0.9444444444444444
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "Medium Concurrency",
+        "num_requests": 20,
+        "max_concurrent": 10,
+        "arrival_rate": 5.0
+      },
+      "model": "Qwen",
+      "baseline": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 148.48613619804382,
+        "throughput_rps": 0.1346927094481396,
+        "latency_ms": {
+          "mean": 88630.63288927078,
+          "median": 90903.97679805756,
+          "p95": 142443.9357638359,
+          "p99": 144354.83863592148,
+          "min": 19955.2583694458,
+          "max": 144832.56435394287
+        },
+        "acceptance_ratio": {
+          "mean": 0.5635054371338601,
+          "median": 0.581923076923077,
+          "min": 0.25,
+          "max": 0.8706896551724138
+        }
+      },
+      "verifypd": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 48.965824365615845,
+        "throughput_rps": 0.40844814233423066,
+        "latency_ms": {
+          "mean": 27986.8839263916,
+          "median": 30782.167196273804,
+          "p95": 45322.350668907166,
+          "p99": 45459.98404979706,
+          "min": 6213.54341506958,
+          "max": 45494.39239501953
+        },
+        "acceptance_ratio": {
+          "mean": 0.6721317881183848,
+          "median": 0.6756756756756757,
+          "min": 0.30654761904761907,
+          "max": 0.8706896551724138
+        }
+      }
+    }
+  ],
+  "Gemma": [
+    {
+      "scenario": {
+        "name": "Low Concurrency",
+        "num_requests": 5,
+        "max_concurrent": 3,
+        "arrival_rate": 2.0
+      },
+      "model": "Gemma",
+      "baseline": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 28.397799015045166,
+        "throughput_rps": 0.17606998335860458,
+        "latency_ms": {
+          "mean": 21276.09887123108,
+          "median": 22464.038848876953,
+          "p95": 25195.229387283325,
+          "p99": 25405.12578010559,
+          "min": 13472.219944000244,
+          "max": 25457.599878311157
+        },
+        "acceptance_ratio": {
+          "mean": 0.6021882955067098,
+          "median": 0.5738636363636364,
+          "min": 0.5,
+          "max": 0.7352941176470589
+        }
+      },
+      "verifypd": {
+        "total_requests": 5,
+        "successful_requests": 5,
+        "failed_requests": 0,
+        "total_time_seconds": 11.96456241607666,
+        "throughput_rps": 0.41790078283862275,
+        "latency_ms": {
+          "mean": 7007.402801513672,
+          "median": 7646.058559417725,
+          "p95": 8792.157697677612,
+          "p99": 8972.64796257019,
+          "min": 4562.208414077759,
+          "max": 9017.770528793335
+        },
+        "acceptance_ratio": {
+          "mean": 0.7135873268226209,
+          "median": 0.7352941176470589,
+          "min": 0.5,
+          "max": 0.8928571428571429
+        }
+      }
+    },
+    {
+      "scenario": {
+        "name": "Medium Concurrency",
+        "num_requests": 20,
+        "max_concurrent": 10,
+        "arrival_rate": 5.0
+      },
+      "model": "Gemma",
+      "baseline": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 143.55567026138306,
+        "throughput_rps": 0.13931877412842303,
+        "latency_ms": {
+          "mean": 89074.75192546844,
+          "median": 96027.96959877014,
+          "p95": 137380.64877986908,
+          "p99": 139546.59942150116,
+          "min": 24023.202180862427,
+          "max": 140088.08708190918
+        },
+        "acceptance_ratio": {
+          "mean": 0.4848883403869159,
+          "median": 0.5233312074829932,
+          "min": 0.2869318181818182,
+          "max": 0.7803030303030303
+        }
+      },
+      "verifypd": {
+        "total_requests": 20,
+        "successful_requests": 20,
+        "failed_requests": 0,
+        "total_time_seconds": 44.03778839111328,
+        "throughput_rps": 0.45415541358193984,
+        "latency_ms": {
+          "mean": 25493.524277210236,
+          "median": 26174.13640022278,
+          "p95": 40393.25258731842,
+          "p99": 40530.843205451965,
+          "min": 10638.221502304077,
+          "max": 40565.24085998535
+        },
+        "acceptance_ratio": {
+          "mean": 0.6468407329829735,
+          "median": 0.6174999999999999,
+          "min": 0.315625,
+          "max": 0.9196428571428571
+        }
+      }
+    }
+  ]
+}
