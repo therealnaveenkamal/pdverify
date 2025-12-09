@@ -216,8 +216,8 @@ class ModelComparisonBenchmark:
         fig.suptitle('Model Comparison: Baseline vs VerifyPD (3-lane)', fontsize=16, fontweight='bold')
 
         # Extract data for plotting
-        concurrency_levels = ["Medium", "High"]
-        concurrency_values = [10, 25]  # max_concurrent values
+        concurrency_levels = ["Low", "Medium"]
+        concurrency_values = [3, 10]  # max_concurrent values matching scenarios
 
         # Plot 1: P95 Latency
         ax1 = axes[0, 0]
