@@ -293,23 +293,35 @@ class BaselineEngine:
         
         # Load draft model
         logger.info(f"Loading draft model: {self.config.model.draft_model_name}")
-        self.draft_model = AutoModelForCausalLM.from_pretrained(
-            self.config.model.draft_model_name,
+        # Some model families (Llama) ship rope_scaling configs that break older transformers.
+        # Only pass rope_scaling override for Llama-like models to avoid breaking Qwen, etc.
+        draft_kwargs = dict(
             torch_dtype=self._get_dtype(),
             trust_remote_code=self.config.model.trust_remote_code,
             token=self.config.model.hf_token,
-            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
+        )
+        if "llama" in self.config.model.draft_model_name.lower():
+            draft_kwargs["rope_scaling"] = None
+
+        self.draft_model = AutoModelForCausalLM.from_pretrained(
+            self.config.model.draft_model_name,
+            **draft_kwargs,
         ).to(self.device)
         self.draft_model.eval()
         
         # Load verifier model
         logger.info(f"Loading verifier model: {self.config.model.verifier_model_name}")
-        self.verifier_model = AutoModelForCausalLM.from_pretrained(
-            self.config.model.verifier_model_name,
+        verifier_kwargs = dict(
             torch_dtype=self._get_dtype(),
             trust_remote_code=self.config.model.trust_remote_code,
             token=self.config.model.hf_token,
-            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
+        )
+        if "llama" in self.config.model.verifier_model_name.lower():
+            verifier_kwargs["rope_scaling"] = None
+
+        self.verifier_model = AutoModelForCausalLM.from_pretrained(
+            self.config.model.verifier_model_name,
+            **verifier_kwargs,
         ).to(self.device)
         self.verifier_model.eval()
         
