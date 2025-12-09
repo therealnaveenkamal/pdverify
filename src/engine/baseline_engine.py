@@ -327,10 +327,16 @@ class BaselineEngine:
         """Clean up model resources."""
         if self.draft_model is not None:
             del self.draft_model
+            self.draft_model = None
         if self.verifier_model is not None:
             del self.verifier_model
+            self.verifier_model = None
+        if self.tokenizer is not None:
+            del self.tokenizer
+            self.tokenizer = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all CUDA operations complete
         logger.info("Cleaned up models")
 
     def __enter__(self):
