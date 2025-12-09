@@ -284,7 +284,8 @@ class BaselineEngine:
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.config.model.draft_model_name,
-            trust_remote_code=self.config.model.trust_remote_code
+            trust_remote_code=self.config.model.trust_remote_code,
+            token=self.config.model.hf_token,
         )
         
         if self.tokenizer.pad_token is None:
@@ -295,7 +296,9 @@ class BaselineEngine:
         self.draft_model = AutoModelForCausalLM.from_pretrained(
             self.config.model.draft_model_name,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.config.model.trust_remote_code
+            trust_remote_code=self.config.model.trust_remote_code,
+            token=self.config.model.hf_token,
+            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
         ).to(self.device)
         self.draft_model.eval()
         
@@ -304,7 +307,9 @@ class BaselineEngine:
         self.verifier_model = AutoModelForCausalLM.from_pretrained(
             self.config.model.verifier_model_name,
             torch_dtype=self._get_dtype(),
-            trust_remote_code=self.config.model.trust_remote_code
+            trust_remote_code=self.config.model.trust_remote_code,
+            token=self.config.model.hf_token,
+            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
         ).to(self.device)
         self.verifier_model.eval()
         

@@ -66,7 +66,7 @@ class ModelRunner:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.draft_model_name,
             trust_remote_code=self.model_config.trust_remote_code,
-            token=token
+            token=token,
         )
 
         # Ensure tokenizer has pad token
@@ -79,7 +79,8 @@ class ModelRunner:
             self.model_config.draft_model_name,
             torch_dtype=self._get_dtype(),
             trust_remote_code=self.model_config.trust_remote_code,
-            token=token
+            token=token,
+            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
         ).to(self.device)
         self.draft_model.eval()
 
@@ -89,7 +90,8 @@ class ModelRunner:
             self.model_config.verifier_model_name,
             torch_dtype=self._get_dtype(),
             trust_remote_code=self.model_config.trust_remote_code,
-            token=token
+            token=token,
+            rope_scaling=None,  # Override incompatible rope_scaling configs on older transformers
         ).to(self.device)
         self.verifier_model.eval()
 
