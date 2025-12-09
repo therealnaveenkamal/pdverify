@@ -75,33 +75,40 @@ class ModelRunner:
 
         # Load draft model
         logger.info(f"Loading draft model: {self.model_config.draft_model_name}")
-        draft_kwargs = dict(
-            torch_dtype=self._get_dtype(),
+        # Prepare config to strip incompatible rope_scaling for Llama-family models on older transformers
+        draft_config = AutoConfig.from_pretrained(
+            self.model_config.draft_model_name,
             trust_remote_code=self.model_config.trust_remote_code,
             token=token,
         )
-        if "llama" in self.model_config.draft_model_name.lower():
-            draft_kwargs["rope_scaling"] = None
+        if hasattr(draft_config, "rope_scaling") and "llama" in self.model_config.draft_model_name.lower():
+            draft_config.rope_scaling = None
 
         self.draft_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.draft_model_name,
-            **draft_kwargs,
+            config=draft_config,
+            torch_dtype=self._get_dtype(),
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
         ).to(self.device)
         self.draft_model.eval()
 
         # Load verifier model
         logger.info(f"Loading verifier model: {self.model_config.verifier_model_name}")
-        verifier_kwargs = dict(
-            torch_dtype=self._get_dtype(),
+        verifier_config = AutoConfig.from_pretrained(
+            self.model_config.verifier_model_name,
             trust_remote_code=self.model_config.trust_remote_code,
             token=token,
         )
-        if "llama" in self.model_config.verifier_model_name.lower():
-            verifier_kwargs["rope_scaling"] = None
+        if hasattr(verifier_config, "rope_scaling") and "llama" in self.model_config.verifier_model_name.lower():
+            verifier_config.rope_scaling = None
 
         self.verifier_model = AutoModelForCausalLM.from_pretrained(
             self.model_config.verifier_model_name,
-            **verifier_kwargs,
+            config=verifier_config,
+            torch_dtype=self._get_dtype(),
+            trust_remote_code=self.model_config.trust_remote_code,
+            token=token,
         ).to(self.device)
         self.verifier_model.eval()
 
