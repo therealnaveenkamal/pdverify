@@ -12,7 +12,7 @@ from collections import deque
 
 from ..scheduler import Request
 from ..utils.config import VerifyPDConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ import torch
 import threading
 from typing import List, Dict, Optional, Any
 import logging
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from ..utils.config import ModelConfig, HardwareConfig
 from ..utils.stream_manager import StreamManager
