@@ -316,12 +316,15 @@ class BaselineEngine:
 
     def _get_dtype(self) -> torch.dtype:
         """Get torch dtype from config."""
-        if self.config.model.dtype == "float16":
+        dtype = self.config.model.dtype.lower()
+        if dtype == "float16":
             return torch.float16
-        elif self.config.model.dtype == "bfloat16":
+        if dtype == "bfloat16":
             return torch.bfloat16
-        else:
-            return torch.float32
+        # "auto" or unknown: prefer half precision on GPU, fall back to fp32 on CPU
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            return torch.float16
+        return torch.float32
 
     def _cleanup_models(self):
         """Clean up model resources."""
