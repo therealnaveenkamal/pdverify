@@ -31,8 +31,8 @@ class SchedulerConfig:
     max_queue_size: int = 1000
     batch_size: int = 8
     
-    # Micro-batching for verify lane
-    verify_micro_batch_size: int = 4
+    # Batching for verify lane - should be LARGER than decode batch for better GPU utilization
+    verify_micro_batch_size: int = 8  # Increased to match or exceed decode batch size
 
 
 @dataclass
@@ -111,8 +111,10 @@ def get_performance_config() -> VerifyPDConfig:
     config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     config.model.verifier_model_name = "meta-llama/Llama-2-7b-hf"
     config.model.max_new_tokens = 100  # Enough tokens for speculation to shine
-    config.scheduler.batch_size = 4
-    config.scheduler.verify_micro_batch_size = 4  # Allow parallel verification
+    config.scheduler.batch_size = 6  # Increased for better batching in PDV
+    config.scheduler.verify_micro_batch_size = 12  # Much larger for verify to maximize PDV advantage
+    # Increase verify batch size even more for better batching at higher concurrency
+    # This allows verify to collect drafts from multiple decode cycles
     return config
 
 
@@ -136,4 +138,8 @@ def get_fast_config() -> VerifyPDConfig:
     config.model.max_new_tokens = 50  # More tokens to see speculation benefit
     config.scheduler.batch_size = 1  # Small batches for fast iteration
     config.scheduler.verify_micro_batch_size = 1
+    return config
+
+    return config
+
     return config

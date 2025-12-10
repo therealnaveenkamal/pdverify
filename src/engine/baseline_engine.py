@@ -196,6 +196,8 @@ class BaselineEngine:
         )["input_ids"].to(self.device)
         
         generated_tokens = []
+        import time
+        request.request_start_time = request.created_at if request.created_at > 0 else time.time()
         
         with torch.no_grad():
             while len(generated_tokens) < self.max_new_tokens:
@@ -212,6 +214,11 @@ class BaselineEngine:
                 with self._lock:
                     self.total_tokens_generated += len(draft_tokens)
                     self.total_tokens_accepted += num_accepted
+                
+                # Record token timestamps for per-token latency tracking
+                current_time = time.time()
+                for _ in accepted_tokens:
+                    request.token_timestamps.append(current_time)
                 
                 generated_tokens.extend(accepted_tokens)
                 

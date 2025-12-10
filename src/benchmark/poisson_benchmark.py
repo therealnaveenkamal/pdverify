@@ -133,11 +133,20 @@ class PoissonBenchmark:
 
                 benchmark_req, start_time = benchmark_req
                 end_time = time.time()
-                latency_ms = (end_time - start_time) * 1000
+                request_latency_ms = (end_time - start_time) * 1000
+
+                # Calculate per-token latencies
+                token_latencies_ms = []
+                if hasattr(engine_req, 'token_timestamps') and engine_req.token_timestamps:
+                    request_start = engine_req.request_start_time if hasattr(engine_req, 'request_start_time') and engine_req.request_start_time > 0 else start_time
+                    for token_time in engine_req.token_timestamps:
+                        token_latency = (token_time - request_start) * 1000
+                        token_latencies_ms.append(token_latency)
 
                 result = {
                     "request_id": benchmark_req.request_id,
-                    "latency_ms": latency_ms,
+                    "request_latency_ms": request_latency_ms,
+                    "token_latencies_ms": token_latencies_ms,
                     "tokens_generated": getattr(engine_req, 'tokens_generated', 0),
                     "tokens_accepted": getattr(engine_req, 'tokens_accepted', 0),
                     "acceptance_ratio": getattr(engine_req, 'get_acceptance_ratio', lambda: 0.0)()
@@ -147,7 +156,7 @@ class PoissonBenchmark:
                     result["error"] = engine_req.error
 
                 results.append(result)
-                logger.debug(f"Completed {benchmark_req.request_id} in {latency_ms:.1f}ms")
+                logger.debug(f"Completed {benchmark_req.request_id} in {request_latency_ms:.1f}ms")
 
         # Submit requests at their Poisson arrival times (asynchronously)
         benchmark_start = start_time
@@ -162,14 +171,16 @@ class PoissonBenchmark:
             if sleep_duration > 0:
                 time.sleep(sleep_duration)
 
+            req_start = time.time()
             engine_req = Request(
                 request_id=benchmark_req.request_id,
                 prompt=benchmark_req.prompt,
                 stage=LaneType.PREFILL,
-                created_at=time.time()
+                created_at=req_start
             )
+            # Set request start time for token latency calculation
+            engine_req.request_start_time = req_start
 
-            req_start = time.time()
             try:
                 active_requests[benchmark_req.request_id] = (benchmark_req, req_start)
                 engine.submit_request_async(engine_req, callback=completion_callback)
@@ -200,30 +211,98 @@ class PoissonBenchmark:
         if not successful:
             return {"error": "No successful requests"}
         
-        latencies = [r["latency_ms"] for r in successful]
-        acceptance_ratios = [r["acceptance_ratio"] for r in successful]
+        # Collect all token latencies for per-token metrics
+        all_token_latencies = []
+        total_tokens = 0
+        request_latencies = []
+        acceptance_ratios = []
+        
+        for r in successful:
+            request_latencies.append(r["request_latency_ms"])
+            acceptance_ratios.append(r["acceptance_ratio"])
+            
+            # Collect per-token latencies
+            if "token_latencies_ms" in r and r["token_latencies_ms"]:
+                all_token_latencies.extend(r["token_latencies_ms"])
+                total_tokens += len(r["token_latencies_ms"])
+        
+        # Calculate token-based metrics
+        token_latency_stats = {}
+        if all_token_latencies:
+            token_latency_stats = {
+                "mean": float(np.mean(all_token_latencies)),
+                "median": float(np.median(all_token_latencies)),
+                "p95": float(np.percentile(all_token_latencies, 95)),
+                "p99": float(np.percentile(all_token_latencies, 99)),
+                "min": float(np.min(all_token_latencies)),
+                "max": float(np.max(all_token_latencies))
+            }
+        
+        # Calculate throughput in tokens per second
+        throughput_tps = total_tokens / total_time if total_time > 0 else 0.0
         
         return {
             "total_requests": len(results),
             "successful_requests": len(successful),
             "failed_requests": len(results) - len(successful),
             "total_time_seconds": total_time,
-            "throughput_rps": len(successful) / total_time,
-            "latency_ms": {
-                "mean": np.mean(latencies),
-                "median": np.median(latencies),
-                "p95": np.percentile(latencies, 95),
-                "p99": np.percentile(latencies, 99),
-                "min": np.min(latencies),
-                "max": np.max(latencies)
+            "total_tokens": total_tokens,
+            "throughput_tps": throughput_tps,  # tokens per second
+            "token_latency_ms": token_latency_stats,
+            "request_latency_ms": {  # Keep for reference
+                "mean": float(np.mean(request_latencies)),
+                "median": float(np.median(request_latencies)),
+                "p95": float(np.percentile(request_latencies, 95)),
+                "p99": float(np.percentile(request_latencies, 99)),
+                "min": float(np.min(request_latencies)),
+                "max": float(np.max(request_latencies))
             },
             "acceptance_ratio": {
-                "mean": np.mean(acceptance_ratios),
-                "median": np.median(acceptance_ratios),
-                "min": np.min(acceptance_ratios),
-                "max": np.max(acceptance_ratios)
+                "mean": float(np.mean(acceptance_ratios)),
+                "median": float(np.median(acceptance_ratios)),
+                "min": float(np.min(acceptance_ratios)),
+                "max": float(np.max(acceptance_ratios))
             }
         }
+
+
+def load_question_jsonl(path: str) -> List[str]:
+    """
+    Load prompts from question.jsonl file (specbench format).
+    Extracts first turn from each entry.
+    
+    Args:
+        path: Path to question.jsonl file
+        
+    Returns:
+        List of prompts (first turn from each entry)
+    """
+    import json
+    prompts = []
+    
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    # Extract first turn
+                    if "turns" in data and len(data["turns"]) > 0:
+                        prompts.append(data["turns"][0])
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse line in {path}: {e}")
+                    continue
+    except FileNotFoundError:
+        logger.error(f"File not found: {path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading {path}: {e}")
+        raise
+    
+    logger.info(f"Loaded {len(prompts)} prompts from {path}")
+    return prompts
 
 
 def get_sharegpt_prompts(num_samples: int = 100) -> List[str]:
