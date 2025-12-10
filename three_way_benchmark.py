@@ -14,9 +14,10 @@ import numpy as np
 import torch
 
 from src.engine import SpeculativeEngine, BaselineEngine, PDEngine
-from src.benchmark import PoissonBenchmark, get_sharegpt_prompts
+from src.benchmark import PoissonBenchmark, get_sharegpt_prompts, load_question_jsonl
 from src.scheduler import Request, LaneType
 from src.utils import get_performance_config
+import os
 
 
 def setup_logging():
@@ -48,35 +49,35 @@ class ThreeWayBenchmark:
         self.logger.info("Baseline vs PD (2-lane) vs PD-Verify (3-lane)")
         self.logger.info("="*80)
         
-        # Test scenarios
+        # Test scenarios - all use 10 requests max (except single request = 1)
         scenarios = [
-            # {
-            #     "name": "Single Request",
-            #     "num_requests": 1,
-            #     "max_concurrent": 1,
-            #     "arrival_rate": 1.0,
-            #     "description": "Measure per-request latency without concurrency"
-            # },
-            # {
-            #     "name": "Low Concurrency",
-            #     "num_requests": 5,
-            #     "max_concurrent": 3,
-            #     "arrival_rate": 2.0,
-            #     "description": "Test basic concurrent handling (2-5 requests)"
-            # },
+            {
+                "name": "Single Request",
+                "num_requests": 1,
+                "max_concurrent": 1,
+                "arrival_rate": 1.0,
+                "description": "Measure per-request latency without concurrency"
+            },
+            {
+                "name": "Low Concurrency",
+                "num_requests": 10,
+                "max_concurrent": 3,
+                "arrival_rate": 2.0,
+                "description": "Test basic concurrent handling (3 concurrent, 10 total)"
+            },
             {
                 "name": "Medium Concurrency",
-                "num_requests": 20,
-                "max_concurrent": 10,
+                "num_requests": 10,
+                "max_concurrent": 5,
                 "arrival_rate": 5.0,
-                "description": "Test performance under typical load"
+                "description": "Test performance under typical load (5 concurrent, 10 total)"
             },
             {
                 "name": "High Concurrency",
-                "num_requests": 50,
-                "max_concurrent": 25,
+                "num_requests": 10,
+                "max_concurrent": 10,
                 "arrival_rate": 10.0,
-                "description": "Stress test and scalability"
+                "description": "Stress test and scalability (10 concurrent, 10 total)"
             }
         ]
         
@@ -104,7 +105,16 @@ class ThreeWayBenchmark:
     
     def run_scenario(self, scenario: Dict) -> Dict:
         """Run a single test scenario on all 3 systems."""
-        prompts = get_sharegpt_prompts(scenario["num_requests"])
+        # Load prompts from question.jsonl
+        question_jsonl_path = os.path.join(os.path.dirname(__file__), "question.jsonl")
+        if os.path.exists(question_jsonl_path):
+            all_prompts = load_question_jsonl(question_jsonl_path)
+            # Use first N prompts or repeat if needed
+            prompts = (all_prompts * ((scenario["num_requests"] // len(all_prompts)) + 1))[:scenario["num_requests"]]
+        else:
+            # Fallback to sample prompts if question.jsonl not found
+            self.logger.warning(f"question.jsonl not found at {question_jsonl_path}, using sample prompts")
+            prompts = get_sharegpt_prompts(scenario["num_requests"])
         
         # Run baseline
         self.logger.info("\n--- Running BASELINE ---")
@@ -163,8 +173,10 @@ class ThreeWayBenchmark:
             results = benchmark.run_benchmark(engine, max_concurrent=max_concurrent)
         
         if "error" not in results:
-            self.logger.info(f"Baseline - p95: {results['latency_ms']['p95']:.1f}ms, "
-                           f"throughput: {results['throughput_rps']:.2f} req/s")
+            token_p95 = results.get('token_latency_ms', {}).get('p95', 0)
+            throughput_tps = results.get('throughput_tps', 0)
+            self.logger.info(f"Baseline - token p95: {token_p95:.1f}ms, "
+                           f"throughput: {throughput_tps:.2f} tokens/s")
         
         return results
     
@@ -181,8 +193,10 @@ class ThreeWayBenchmark:
             results = benchmark.run_benchmark(engine, max_concurrent=max_concurrent)
         
         if "error" not in results:
-            self.logger.info(f"PD (2-lane) - p95: {results['latency_ms']['p95']:.1f}ms, "
-                           f"throughput: {results['throughput_rps']:.2f} req/s")
+            token_p95 = results.get('token_latency_ms', {}).get('p95', 0)
+            throughput_tps = results.get('throughput_tps', 0)
+            self.logger.info(f"PD (2-lane) - token p95: {token_p95:.1f}ms, "
+                           f"throughput: {throughput_tps:.2f} tokens/s")
         
         return results
     
@@ -199,8 +213,10 @@ class ThreeWayBenchmark:
             results = benchmark.run_benchmark(engine, max_concurrent=max_concurrent)
         
         if "error" not in results:
-            self.logger.info(f"PD-Verify (3-lane) - p95: {results['latency_ms']['p95']:.1f}ms, "
-                           f"throughput: {results['throughput_rps']:.2f} req/s")
+            token_p95 = results.get('token_latency_ms', {}).get('p95', 0)
+            throughput_tps = results.get('throughput_tps', 0)
+            self.logger.info(f"PD-Verify (3-lane) - token p95: {token_p95:.1f}ms, "
+                           f"throughput: {throughput_tps:.2f} tokens/s")
         
         return results
     
@@ -219,25 +235,31 @@ class ThreeWayBenchmark:
             self.logger.error("Error in one or more systems")
             return
         
-        # P95 latencies
-        baseline_p95 = baseline["latency_ms"]["p95"]
-        pd_p95 = pd["latency_ms"]["p95"]
-        pdverify_p95 = pdverify["latency_ms"]["p95"]
+        # Token P95 latencies
+        baseline_p95 = baseline.get("token_latency_ms", {}).get("p95", 0)
+        pd_p95 = pd.get("token_latency_ms", {}).get("p95", 0)
+        pdverify_p95 = pdverify.get("token_latency_ms", {}).get("p95", 0)
         
-        # Throughputs
-        baseline_tput = baseline["throughput_rps"]
-        pd_tput = pd["throughput_rps"]
-        pdverify_tput = pdverify["throughput_rps"]
+        # Throughputs (tokens per second)
+        baseline_tput = baseline.get("throughput_tps", 0)
+        pd_tput = pd.get("throughput_tps", 0)
+        pdverify_tput = pdverify.get("throughput_tps", 0)
         
-        self.logger.info(f"Latency (p95):")
-        self.logger.info(f"  Baseline:         {baseline_p95:>10.1f}ms")
-        self.logger.info(f"  PD (2-lane):      {pd_p95:>10.1f}ms ({((baseline_p95-pd_p95)/baseline_p95*100):+.1f}% vs baseline)")
-        self.logger.info(f"  PD-Verify (3-ln): {pdverify_p95:>10.1f}ms ({((baseline_p95-pdverify_p95)/baseline_p95*100):+.1f}% vs baseline)")
+        self.logger.info(f"Token Latency (p95):")
+        if baseline_p95 > 0:
+            self.logger.info(f"  Baseline:         {baseline_p95:>10.1f}ms")
+            if pd_p95 > 0:
+                self.logger.info(f"  PD (2-lane):      {pd_p95:>10.1f}ms ({((baseline_p95-pd_p95)/baseline_p95*100):+.1f}% vs baseline)")
+            if pdverify_p95 > 0:
+                self.logger.info(f"  PD-Verify (3-ln): {pdverify_p95:>10.1f}ms ({((baseline_p95-pdverify_p95)/baseline_p95*100):+.1f}% vs baseline)")
         
-        self.logger.info(f"\nThroughput:")
-        self.logger.info(f"  Baseline:         {baseline_tput:>10.2f} req/s")
-        self.logger.info(f"  PD (2-lane):      {pd_tput:>10.2f} req/s ({((pd_tput-baseline_tput)/baseline_tput*100):+.1f}% vs baseline)")
-        self.logger.info(f"  PD-Verify (3-ln): {pdverify_tput:>10.2f} req/s ({((pdverify_tput-baseline_tput)/baseline_tput*100):+.1f}% vs baseline)")
+        self.logger.info(f"\nThroughput (tokens/s):")
+        if baseline_tput > 0:
+            self.logger.info(f"  Baseline:         {baseline_tput:>10.2f} tokens/s")
+            if pd_tput > 0:
+                self.logger.info(f"  PD (2-lane):      {pd_tput:>10.2f} tokens/s ({((pd_tput-baseline_tput)/baseline_tput*100):+.1f}% vs baseline)")
+            if pdverify_tput > 0:
+                self.logger.info(f"  PD-Verify (3-ln): {pdverify_tput:>10.2f} tokens/s ({((pdverify_tput-baseline_tput)/baseline_tput*100):+.1f}% vs baseline)")
         self.logger.info("-"*80)
     
     def _generate_summary(self):
@@ -258,9 +280,13 @@ class ThreeWayBenchmark:
             if "error" in baseline or "error" in pd or "error" in pdverify:
                 continue
             
-            baseline_p95 = baseline["latency_ms"]["p95"]
-            pd_p95 = pd["latency_ms"]["p95"]
-            pdverify_p95 = pdverify["latency_ms"]["p95"]
+            baseline_p95 = baseline.get("token_latency_ms", {}).get("p95", 0)
+            pd_p95 = pd.get("token_latency_ms", {}).get("p95", 0)
+            pdverify_p95 = pdverify.get("token_latency_ms", {}).get("p95", 0)
+            
+            # Skip if no valid metrics
+            if baseline_p95 == 0:
+                continue
             
             # Determine winners
             if pd_p95 < baseline_p95:
@@ -357,18 +383,18 @@ class ThreeWayBenchmark:
                 f.write("| Metric | Baseline | PD (2-lane) | PD-Verify (3-lane) |\n")
                 f.write("|--------|----------|-------------|--------------------|\n")
                 
-                # Latencies
+                # Token Latencies
                 for metric in ["p95", "p99"]:
-                    b_val = baseline["latency_ms"][metric]
-                    p_val = pd["latency_ms"][metric]
-                    v_val = pdverify["latency_ms"][metric]
-                    f.write(f"| Latency {metric.upper()} (ms) | {b_val:.1f} | {p_val:.1f} | {v_val:.1f} |\n")
+                    b_val = baseline.get("token_latency_ms", {}).get(metric, 0)
+                    p_val = pd.get("token_latency_ms", {}).get(metric, 0)
+                    v_val = pdverify.get("token_latency_ms", {}).get(metric, 0)
+                    f.write(f"| Token Latency {metric.upper()} (ms) | {b_val:.1f} | {p_val:.1f} | {v_val:.1f} |\n")
                 
-                # Throughput
-                b_tput = baseline["throughput_rps"]
-                p_tput = pd["throughput_rps"]
-                v_tput = pdverify["throughput_rps"]
-                f.write(f"| Throughput (req/s) | {b_tput:.2f} | {p_tput:.2f} | {v_tput:.2f} |\n")
+                # Throughput (tokens per second)
+                b_tput = baseline.get("throughput_tps", 0)
+                p_tput = pd.get("throughput_tps", 0)
+                v_tput = pdverify.get("throughput_tps", 0)
+                f.write(f"| Throughput (tokens/s) | {b_tput:.2f} | {p_tput:.2f} | {v_tput:.2f} |\n")
                 
                 # Acceptance rate
                 b_acc = baseline["acceptance_ratio"]["mean"]

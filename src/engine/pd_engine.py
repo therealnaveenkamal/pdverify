@@ -43,10 +43,17 @@ class PDEngine:
         """
         self.config = config
         
-        # Initialize model runner
+        # Initialize model runner with stream manager
+        from ..utils.stream_manager import StreamManager
+        self.stream_manager = StreamManager(
+            device=config.hardware.device,
+            num_streams=2  # One for prefill, one for decode
+        )
+        
         self.model_runner = ModelRunner(
             model_config=config.model,
-            hardware_config=config.hardware
+            hardware_config=config.hardware,
+            stream_manager=self.stream_manager
         )
         
         # Controller for draft length
@@ -54,7 +61,8 @@ class PDEngine:
         
         # Engine state
         self.is_running = False
-        self.worker_thread = None
+        self.prefill_worker_thread = None
+        self.decode_worker_thread = None
         
         # Request queues (simple 2-lane system)
         from collections import deque
@@ -75,29 +83,35 @@ class PDEngine:
         logger.info(f"PDEngine initialized with 2-lane architecture and batch size {self.batch_size}")
     
     def start(self):
-        """Start the engine and worker thread."""
+        """Start the engine and worker threads."""
         logger.info("Starting PDEngine...")
         self.model_runner.load_models()
         self.is_running = True
         
-        # Start single worker thread
-        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self.worker_thread.start()
+        # Start separate worker threads for prefill and decode
+        self.prefill_worker_thread = threading.Thread(target=self._prefill_worker_loop, daemon=True)
+        self.decode_worker_thread = threading.Thread(target=self._decode_worker_loop, daemon=True)
         
-        logger.info("PDEngine started")
+        self.prefill_worker_thread.start()
+        self.decode_worker_thread.start()
+        
+        logger.info("PDEngine started with parallel prefill and decode workers")
 
     def stop(self):
-        """Stop the engine and worker thread."""
+        """Stop the engine and worker threads."""
         logger.info("Stopping PDEngine...")
         self.is_running = False
         
-        # Wake up worker
+        # Wake up both workers
         with self._queue_condition:
-            self._queue_condition.notify()
+            self._queue_condition.notify_all()
         
-        if self.worker_thread:
-            self.worker_thread.join(timeout=2.0)
+        if self.prefill_worker_thread:
+            self.prefill_worker_thread.join(timeout=2.0)
+        if self.decode_worker_thread:
+            self.decode_worker_thread.join(timeout=2.0)
         
+        self.stream_manager.cleanup()
         self.model_runner.cleanup()
         logger.info("PDEngine stopped")
     
@@ -130,59 +144,73 @@ class PDEngine:
         
         logger.debug(f"Queued request {request.request_id} to prefill lane")
 
-    def _worker_loop(self):
-        """Worker loop that processes requests from both lanes with priority."""
-        logger.info("Worker loop started")
+    def _prefill_worker_loop(self):
+        """Prefill worker loop that processes requests from prefill queue."""
+        logger.info("Prefill worker loop started")
         
         while self.is_running:
-            requests_to_process = []
-            lane_type = None
+            request = None
             
-            # Get requests from queues (decode has priority)
+            # Get request from prefill queue
             with self._queue_condition:
-                while self.is_running and len(self.decode_queue) == 0 and len(self.prefill_queue) == 0:
+                while self.is_running and len(self.prefill_queue) == 0:
                     self._queue_condition.wait(timeout=0.1)
                 
                 if not self.is_running:
                     break
                 
-                # Priority: Decode > Prefill
-                # Collect batch for Decode
-                if len(self.decode_queue) > 0:
-                    lane_type = TwoLaneType.DECODE
-                    count = 0
-                    while len(self.decode_queue) > 0 and count < self.batch_size:
-                        requests_to_process.append(self.decode_queue.popleft())
-                        count += 1
+                if len(self.prefill_queue) > 0:
+                    request = self.prefill_queue.popleft()
+            
+            if request is None:
+                continue
+            
+            # Process prefill
+            try:
+                self._handle_prefill(request)
+            except Exception as e:
+                logger.error(f"Error processing prefill for {request.request_id}: {e}")
+                request.error = str(e)
+                request.completion_time = time.time()
+                self._trigger_callback(request, None)
+        
+        logger.info("Prefill worker loop stopped")
+    
+    def _decode_worker_loop(self):
+        """Decode worker loop that processes requests from decode queue."""
+        logger.info("Decode worker loop started")
+        
+        while self.is_running:
+            requests_to_process = []
+            
+            # Get batch from decode queue
+            with self._queue_condition:
+                while self.is_running and len(self.decode_queue) == 0:
+                    self._queue_condition.wait(timeout=0.1)
                 
-                # If no decode work, check prefill (only process 1 prefill at a time typically to avoid blocking)
-                # But we can batch if desired. For now, let's just do 1 prefill to keep it simple and responsive.
-                elif len(self.prefill_queue) > 0:
-                    lane_type = TwoLaneType.PREFILL
-                    requests_to_process.append(self.prefill_queue.popleft())
+                if not self.is_running:
+                    break
+                
+                # Collect batch for decode
+                count = 0
+                while len(self.decode_queue) > 0 and count < self.batch_size:
+                    requests_to_process.append(self.decode_queue.popleft())
+                    count += 1
             
             if not requests_to_process:
                 continue
             
-            # Process batch based on stage
+            # Process decode batch
             try:
-                if lane_type == TwoLaneType.PREFILL:
-                    # Prefill is usually memory intensive, process one by one or small batch
-                    for req in requests_to_process:
-                        self._handle_prefill(req)
-                        
-                elif lane_type == TwoLaneType.DECODE:
-                    # Batch processing for decode!
-                    self._handle_decode_batch(requests_to_process)
-                    
+                self._handle_decode_batch(requests_to_process)
             except Exception as e:
-                logger.error(f"Error processing batch: {e}")
+                logger.error(f"Error processing decode batch: {e}")
                 for req in requests_to_process:
                     req.error = str(e)
                     req.completion_time = time.time()
                     self._trigger_callback(req, None)
         
-        logger.info("Worker loop stopped")
+        logger.info("Decode worker loop stopped")
 
     def _trigger_callback(self, request: Request, result: Optional[str]):
         """Helper to trigger callback."""
@@ -197,6 +225,9 @@ class PDEngine:
 
     def _handle_prefill(self, request: Request):
         """Handle prefill stage."""
+        # Use CUDA stream 0 for prefill
+        stream = self.stream_manager.get_stream(0)
+        
         # Tokenize prompt
         input_ids = self.model_runner.tokenizer(
             request.prompt,
@@ -206,7 +237,14 @@ class PDEngine:
             max_length=self.config.model.max_model_len
         )["input_ids"].to(self.model_runner.device)
         
-        request._input_ids = input_ids
+        # Use stream context if available
+        if stream is not None:
+            with torch.cuda.stream(stream):
+                request._input_ids = input_ids
+                if stream is not None:
+                    stream.synchronize()
+        else:
+            request._input_ids = input_ids
         
         # Transition to decode lane
         request._pd_stage = TwoLaneType.DECODE
@@ -255,14 +293,24 @@ class PDEngine:
         
         batch_input_ids = torch.cat(padded_inputs, dim=0)
         
-        # 1. Generate Draft Tokens (Batched)
-        draft_tokens_batch = self.model_runner.generate_draft_tokens(batch_input_ids, draft_length)
+        # Use CUDA stream 1 for decode
+        stream = self.stream_manager.get_stream(1)
         
-        # 2. Verify Tokens (Batched)
-        accepted_tokens_batch, num_accepted_list = self.model_runner.verify_tokens(batch_input_ids, draft_tokens_batch)
+        # 1. Generate Draft Tokens (Batched) - with stream support
+        draft_tokens_batch = self.model_runner.generate_draft_tokens(
+            batch_input_ids, draft_length, stream_id=1
+        )
+        
+        # 2. Verify Tokens (Batched) - with stream support
+        accepted_tokens_batch, num_accepted_list = self.model_runner.verify_tokens(
+            batch_input_ids, draft_tokens_batch, stream_id=1
+        )
         
         # 3. Update Requests
         requeue_list = []
+        
+        import time
+        current_time = time.time()
         
         for i, req in enumerate(active_batch):
             accepted_tokens = accepted_tokens_batch[i]
@@ -275,6 +323,10 @@ class PDEngine:
             with self._lock:
                 self.total_tokens_generated += len(draft_tokens_batch[i])
                 self.total_tokens_accepted += num_accepted
+            
+            # Record token timestamps for per-token latency tracking
+            for _ in accepted_tokens:
+                req.token_timestamps.append(current_time)
             
             # Append accepted tokens
             req.generated_tokens.extend(accepted_tokens)

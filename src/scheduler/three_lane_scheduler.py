@@ -73,17 +73,38 @@ class ThreeLaneScheduler:
 
             return success
     
-    def get_next_batch(self) -> Optional[List[Request]]:
+    def get_next_batch(self, lane_type: Optional[LaneType] = None) -> Optional[List[Request]]:
         """
-        Get next batch of requests following priority order.
-        Priority: DECODE > VERIFY > PREFILL
+        Get next batch of requests following dynamic priority order.
+        Priority: VERIFY > DECODE > PREFILL (when verify queue is building up)
+        Default: DECODE > VERIFY > PREFILL
+
+        Args:
+            lane_type: If specified, only get batch from this lane. Otherwise use priority order.
 
         Returns:
-            Batch of requests from highest priority non-empty lane
+            Batch of requests from highest priority non-empty lane (or specified lane)
         """
         with self._lock:
-            # Check lanes in priority order
-            priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
+            if lane_type is not None:
+                # Get batch from specific lane
+                lane = self.lanes[lane_type]
+                if not lane.is_empty():
+                    batch_size = self.config.verify_micro_batch_size if lane_type == LaneType.VERIFY else self.config.batch_size
+                    batch = lane.get_batch(batch_size)
+                    if batch:
+                        logger.debug(f"Scheduled batch of {len(batch)} from {lane_type.name} lane")
+                        return batch
+                return None
+
+            # Dynamic priority: prioritize verify if it's getting backed up
+            verify_depth = len(self.verify_lane)
+            decode_depth = len(self.decode_lane)
+
+            if verify_depth > decode_depth + 2:  # If verify is significantly backed up
+                priority_order = [LaneType.VERIFY, LaneType.DECODE, LaneType.PREFILL]
+            else:
+                priority_order = [LaneType.DECODE, LaneType.VERIFY, LaneType.PREFILL]
 
             for lane_type in priority_order:
                     lane = self.lanes[lane_type]

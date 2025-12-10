@@ -85,17 +85,17 @@ class FeedbackController:
         avg_acceptance = self._get_average_acceptance()
         decode_p95 = self._get_decode_p95()
         
-        # Decision logic
+        # PDV-optimized decision logic: more aggressive draft length management
         should_decrease = (
             verify_queue_depth > self.config.max_verify_queue_depth or
             decode_p95 > self.config.target_decode_p95_ms or
-            avg_acceptance < self.config.length_decrease_threshold
+            avg_acceptance < self.config.length_decrease_threshold - 0.05  # Lower threshold for PDV
         )
-        
+
         should_increase = (
-            verify_queue_depth == 0 and
-            decode_p95 < self.config.target_decode_p95_ms * 0.8 and  # 20% headroom
-            avg_acceptance > self.config.length_increase_threshold
+            verify_queue_depth <= 1 and  # More aggressive increase condition
+            decode_p95 < self.config.target_decode_p95_ms * 0.9 and  # Less headroom needed
+            avg_acceptance > self.config.length_increase_threshold - 0.05  # Lower threshold for PDV
         )
         
         # Adjust draft length

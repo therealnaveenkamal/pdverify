@@ -52,16 +52,16 @@ class Request:
         self.verify_start_time = None
         self.completion_time = None
         
+        # Token timestamp tracking for per-token latency metrics
+        self.token_timestamps: List[float] = []
+        self.request_start_time = created_at if created_at else 0.0
+        
         # Async processing state
         self.completed = False
         self.error = None
         self.result_text = None
         self.generated_tokens = []
         self._input_ids = None
-
-        # Async processing state
-        self.completed = False
-        self.error = None
     
     def get_acceptance_ratio(self) -> float:
         """Calculate acceptance ratio for this request."""
