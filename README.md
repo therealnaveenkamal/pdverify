@@ -1,57 +1,84 @@
-# PD-Verify (PDV): Advanced Speculative Decoding with Disaggregated Serving
+# PD-Verify (PDV): Disaggregated Speculative Decoding
 
-PD-Verify is a state-of-the-art speculative decoding system that implements **disaggregated serving** with **three-lane architecture** for maximum throughput and efficiency. This system outperforms traditional approaches by intelligently managing computational resources across specialized processing lanes.
+PD-Verify is a speculative decoding engine that **splits prefill, decode, and verify into separate lanes** on a single GPU. The goal is simple: squeeze more throughput and better latency out of speculative decoding by treating each stage as a first-class workload.
+
+It implements a **three-lane architecture** on top of CUDA streams and a small scheduler, and compares directly against:
+
+* A baseline “all-in-one” speculative decoding loop
+* A 2-lane PD (prefill–decode) architecture
 
 ## Table of Contents
-- [Overview](#overview)
-- [Architectural Comparison](#architectural-comparison)
-- [Performance Results](#performance-results)
-- [Technical Deep Dive](#technical-deep-dive)
-- [Setup and Usage](#setup-and-usage)
-- [Contributing](#contributing)
+
+* [Overview](#overview)
+* [Architectural Comparison](#architectural-comparison)
+* [Performance Results](#performance-results)
+* [Technical Deep Dive](#technical-deep-dive)
+* [Setup and Usage](#setup-and-usage)
+* [Architecture Evolution](#architecture-evolution)
+* [Contributing](#contributing)
 
 ## Overview
 
-PD-Verify introduces **disaggregated serving** - separating different computational stages of speculative decoding into specialized lanes that can execute concurrently. This approach achieves:
+PD-Verify separates speculative decoding into three concurrent lanes:
 
-- **Up to 11.5% better throughput** than 2-lane PD systems
-- **Up to 7.5% better latency** at medium concurrency
-- **90%+ GPU utilization** through stream parallelism
-- **Intelligent adaptation** between atomic and parallel processing modes
+* **Prefill**
+* **Decode (draft generation)**
+* **Verify**
 
-### Key Innovation: Hybrid Architecture
+All three run on their own worker threads and CUDA streams. Depending on the concurrency level, PDV either behaves like a normal PD system or switches into a fully parallel 3-lane mode.
 
-PDV uses a **hybrid approach** that adapts processing strategy based on concurrency:
-- **Low concurrency (≤3)**: Atomic draft+verify processing (PD-compatible)
-- **Medium/High concurrency (>3)**: Full 3-lane parallel processing
+**Empirically, this gives:**
+
+* **Up to ~11.5% higher throughput** vs 2-lane PD at medium concurrency
+* **Up to ~7.5% lower P95 latency** at concurrency 5
+* **~90%+ GPU utilization** via overlapped streams (vs ~67% in PD)
+* No regression at low concurrency (PDV falls back to PD-style atomic processing)
+
+### Hybrid Mode
+
+PDV is not “always 3-lane”. It’s hybrid:
+
+* **Concurrency ≤ 3** → behave like PD: atomic draft+verify in the decode lane
+* **Concurrency > 3** → enable full 3-lane PDV: prefill, decode, verify in parallel
+
+This avoids paying extra coordination overhead when there isn’t enough work to parallelize.
+
+---
 
 ## Architectural Comparison
 
-### Baseline Architecture
-```
+### Baseline: Single-Lane Speculative Decoding
+
+```text
 ┌─────────────────┐
 │   Sequential    │
 │ Speculative     │
 │   Decoding      │
 └─────────────────┘
 ```
-**Characteristics:**
-- Single-threaded sequential processing
-- Draft generation → Verification → Next token (loop)
-- Simple but inefficient for concurrent workloads
-- **Workers:** 1 main thread with multiple GPU workers
 
-**Strengths:**
-- Predictable latency for single requests
-- Simple implementation
+**Rough shape:**
 
-**Weaknesses:**
-- Poor GPU utilization
-- No parallelism between operations
-- Scales poorly with concurrency
+* One main worker loop on top of several GPU workers
+* For each request: draft generation → verification → next token (repeat)
+* No attempt to decouple prefill/verify/decode
 
-### PD (Prefill-Decode) Architecture - 2 Lanes
-```
+**Pros**
+
+* Easy to reason about
+* Latency for a single request is predictable
+
+**Cons**
+
+* Poor GPU utilization under concurrency
+* Prefill, decode, and verify block each other
+* Scaling is basically linear until you hit GPU saturation
+
+---
+
+### PD: 2-Lane Prefill–Decode
+
+```text
 ┌─────────────┐    ┌─────────────┐
 │   Prefill   │────│   Decode    │
 │   Lane      │    │   Lane      │
@@ -59,219 +86,273 @@ PDV uses a **hybrid approach** that adapts processing strategy based on concurre
 │             │    │  Verify)    │
 └─────────────┘    └─────────────┘
 ```
-**Characteristics:**
-- **2 worker threads** (prefill + decode)
-- **2 CUDA streams** for GPU parallelism
-- Atomic draft+verify processing in decode lane
-- Simple queue-based request management
 
-**Strengths:**
-- Good balance of simplicity and performance
-- Reliable performance across concurrency levels
-- Efficient for medium workloads
+**Core idea:**
 
-**Weaknesses:**
-- Limited parallelism (only 2 concurrent operations)
-- Atomic processing creates sequential bottlenecks
-- ~67% GPU utilization maximum
+* **2 CPU worker threads**: one for prefill, one for decode
+* **2 CUDA streams**: prefill stream + decode stream
+* Verify runs “inside” decode as an atomic unit (draft+verify together)
 
-### PDV (Prefill-Decode-Verify) Architecture - 3 Lanes
-```
+**Pros**
+
+* Solid baseline for PD-style systems
+* Less code complexity than full disaggregation
+* Works well at low–medium concurrency
+
+**Cons**
+
+* Only 2 operations in flight at once
+* Decode+verify is still a single atomic step → sequential bottleneck
+* GPU utilization tends to flatten around ~67%
+
+---
+
+### PDV: 3-Lane Prefill–Decode–Verify
+
+```text
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   Prefill   │────│   Decode    │────│   Verify    │
 │   Lane      │    │   Lane      │    │   Lane      │
 │             │    │ (Draft Gen) │    │ (Verify)    │
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
-**Characteristics:**
-- **3 worker threads** (prefill + decode + verify)
-- **3 CUDA streams** for maximum GPU parallelism
-- Separated draft generation and verification
-- Advanced ThreeLaneScheduler with dynamic priorities
 
-**Strengths:**
-- Maximum parallelism (3 concurrent operations)
-- **90%+ GPU utilization** through stream overlap
-- Superior scalability with concurrency
-- Intelligent priority management
+**What changes:**
 
-**Weaknesses:**
-- Higher coordination overhead
-- Complex lane transitions
-- Requires careful tuning for low concurrency
+* **3 CPU worker threads**: prefill, decode, verify
+* **3 CUDA streams**: one per lane
+* Decode only handles **draft generation**; verify gets its own lane and queue
+* A small **ThreeLaneScheduler** decides which lane runs next based on queue depths
+
+**Pros**
+
+* Up to three GPU operations in flight at once
+* **Higher GPU utilization** (~90%+ in our runs)
+* Better scaling when concurrency increases
+* Flexibility to prioritize verify vs decode
+
+**Cons**
+
+* More coordination and queueing logic
+* Overhead can hurt at very low concurrency (hence hybrid mode)
+* Slightly higher memory pressure for lane-local state
+
+---
 
 ## Performance Results
 
-### Comprehensive Benchmark Results (10 requests each)
+Benchmarks run with 10 requests at each concurrency level.
 
-| Concurrency | Engine | Token P95 (ms) | Throughput (tokens/s) | Acceptance Rate | Status |
-|------------|--------|----------------|----------------------|----------------|--------|
-| **0** | Baseline | 22,850.2 | 9.05 | 0.530 | ✅ |
-| **0** | PD | 15,600.4 | 44.93 | 0.448 | ✅ |
-| **0** | PDV | 15,489.6 | 44.39 | 0.452 | ✅ |
-| **1** | Baseline | 66,023.5 | 13.03 | 0.530 | ✅ |
-| **1** | PD | 15,550.6 | 44.61 | 0.448 | ✅ |
-| **1** | PDV | 15,579.5 | 44.55 | 0.452 | ✅ |
-| **3** | Baseline | 68,117.9 | 13.63 | 0.530 | ✅ |
-| **3** | PD | 15,740.7 | 44.39 | 0.448 | ✅ |
-| **3** | PDV | 15,180.0 | 47.25 | 0.452 | ✅ |
-| **5** | Baseline | 64,692.1 | 14.22 | 0.530 | ✅ |
-| **5** | PD | 18,019.9 | 45.98 | 0.447 | ✅ |
-| **5** | PDV | 16,670.6 | 51.27 | 0.452 | ✅ |
-| **7** | Baseline | 59,937.3 | 14.22 | 0.530 | ✅ |
-| **7** | PD | 17,355.5 | 48.17 | 0.448 | ✅ |
-| **7** | PDV | 17,890.9 | 48.73 | 0.452 | ✅ |
-| **9** | Baseline | 53,469.2 | 14.35 | 0.530 | ✅ |
-| **9** | PD | 17,305.7 | 48.17 | 0.448 | ✅ |
-| **9** | PDV | 17,822.6 | 48.73 | 0.452 | ✅ |
-| **10** | Baseline | 55,462.9 | 14.22 | 0.530 | ✅ |
-| **10** | PD | 17,305.7 | 48.17 | 0.448 | ✅ |
-| **10** | PDV | 17,822.6 | 48.73 | 0.452 | ✅ |
+> Note: “Token P95 (ms)” is per-token P95 latency. Throughput is tokens/s across all requests.
 
-### Key Performance Insights
+| Concurrency | Engine   | Token P95 (ms) | Throughput (tokens/s) | Acceptance Rate | Status |
+| ----------- | -------- | -------------- | --------------------- | --------------- | ------ |
+| **0**       | Baseline | 22,850.2       | 9.05                  | 0.530           | ✅      |
+| **0**       | PD       | 15,600.4       | 44.93                 | 0.448           | ✅      |
+| **0**       | PDV      | 15,489.6       | 44.39                 | 0.452           | ✅      |
+| **1**       | Baseline | 66,023.5       | 13.03                 | 0.530           | ✅      |
+| **1**       | PD       | 15,550.6       | 44.61                 | 0.448           | ✅      |
+| **1**       | PDV      | 15,579.5       | 44.55                 | 0.452           | ✅      |
+| **3**       | Baseline | 68,117.9       | 13.63                 | 0.530           | ✅      |
+| **3**       | PD       | 15,740.7       | 44.39                 | 0.448           | ✅      |
+| **3**       | PDV      | 15,180.0       | 47.25                 | 0.452           | ✅      |
+| **5**       | Baseline | 64,692.1       | 14.22                 | 0.530           | ✅      |
+| **5**       | PD       | 18,019.9       | 45.98                 | 0.447           | ✅      |
+| **5**       | PDV      | 16,670.6       | 51.27                 | 0.452           | ✅      |
+| **7**       | Baseline | 59,937.3       | 14.22                 | 0.530           | ✅      |
+| **7**       | PD       | 17,355.5       | 48.17                 | 0.448           | ✅      |
+| **7**       | PDV      | 17,890.9       | 48.73                 | 0.452           | ✅      |
+| **9**       | Baseline | 53,469.2       | 14.35                 | 0.530           | ✅      |
+| **9**       | PD       | 17,305.7       | 48.17                 | 0.448           | ✅      |
+| **9**       | PDV      | 17,822.6       | 48.73                 | 0.452           | ✅      |
+| **10**      | Baseline | 55,462.9       | 14.22                 | 0.530           | ✅      |
+| **10**      | PD       | 17,305.7       | 48.17                 | 0.448           | ✅      |
+| **10**      | PDV      | 17,822.6       | 48.73                 | 0.452           | ✅      |
 
-#### PDV Success Factors:
-1. **Stream Parallelism**: 3 CUDA streams enable concurrent GPU operations
-2. **Lane Separation**: Dedicated lanes prevent resource contention
-3. **Dynamic Priorities**: Scheduler adapts to workload patterns
-4. **Hybrid Processing**: Automatic mode switching based on concurrency
+### What Actually Improves?
 
-#### PDV Performance Advantages:
-- **Medium Concurrency (5)**: +11.5% throughput, +7.5% better latency vs PD
-- **High Concurrency (7-10)**: +1.2% throughput advantage maintained
-- **Low Concurrency (0-3)**: Matches PD performance (no degradation)
+* At **concurrency 5**, PDV vs PD:
 
-#### Why PDV Succeeds:
-- **GPU Utilization**: 90%+ vs PD's 67% through overlapped operations
-- **Scalability**: Better throughput scaling with increasing concurrency
-- **Parallelism**: Three concurrent operation streams vs PD's two
-- **Intelligence**: Adaptive processing strategies
+  * **+11.5% throughput** (45.98 → 51.27 tokens/s)
+  * **~7.5% lower P95 latency** (18,019.9 → 16,670.6 ms)
+* At **high concurrency (7–10)**:
 
-#### Why PDV Can Fail:
-- **Coordination Overhead**: Lane transitions add latency at very low concurrency
-- **Complexity**: More moving parts increase failure potential
-- **Tuning Requirements**: Needs careful parameter optimization
-- **Memory Pressure**: Additional lanes require more GPU memory
+  * PDV keeps a small but consistent throughput edge (~1–2%)
+* At **low concurrency (0–3)**:
+
+  * PDV and PD are basically tied (by design, PDV falls back to PD-style mode)
+
+### Why PDV Helps
+
+* **More overlap:** prefill, draft, and verify run truly in parallel on separate streams.
+* **Scheduler awareness:** verify can be prioritized when its queue backs up.
+* **GPU busy time goes up:** fewer idle gaps in Nsight traces; utilization ~90%+.
+
+### When PDV Isn’t Better
+
+* At very low concurrency, queueing and lane switching overhead can outweigh the benefits.
+* The 3-lane scheduler adds some complexity; tuning thresholds and batch sizes matters.
+* More lanes mean more state and buffers, so memory pressure is slightly higher.
+
+---
 
 ## Technical Deep Dive
 
-### CUDA Stream Architecture
+### CUDA Stream Layout
 
-PDV leverages **single-GPU parallelism** through CUDA streams:
+PDV uses three CUDA streams on a single GPU:
 
-```
-GPU Work Distribution:
-Stream 0: Draft Token Generation
-Stream 1: Token Verification
-Stream 2: Prefill Processing
-
-Timeline:
-Time: Draft ──┐
-       Verify─┼─► Overlapped Execution
-      Prefill─┘
+```text
+Stream 0: Draft token generation  (Decode)
+Stream 1: Token verification      (Verify)
+Stream 2: Prefill                 (Prefill)
 ```
 
-### Lane Scheduling Algorithm
+Rough timeline:
 
-The ThreeLaneScheduler implements dynamic priority management:
+```text
+Time →
+Draft   ──▇▇▇─────▇▇▇─────…
+Verify  ─────▇▇▇─────▇▇▇──…
+Prefill ▇▇▇─────────▇▇▇───…
+```
+
+The idea is to always have something queued in each stream when there’s enough work, so the GPU scheduler can overlap kernels as much as possible.
+
+---
+
+### ThreeLaneScheduler (Lane Selection)
+
+The scheduler looks at queue depths and picks an order for attempting to schedule work:
 
 ```python
-# Priority Logic
+# Pseudocode (simplified)
 if verify_queue_depth > decode_queue_depth + 2:
-    priority_order = [VERIFY, DECODE, PREFILL]  # Prioritize verification
+    priority_order = [VERIFY, DECODE, PREFILL]
 else:
-    priority_order = [DECODE, VERIFY, PREFILL]  # Normal processing
+    priority_order = [DECODE, VERIFY, PREFILL]
 ```
 
-### Hybrid Processing Strategy
+Interpretation:
+
+* If verification is falling behind (its queue is too deep), push it to the front.
+* Otherwise, default to decode → verify → prefill so draft tokens keep flowing.
+* Prefill is generally the least time-sensitive, so it comes last.
+
+Actual implementation is a bit more nuanced (error handling, backoffs, etc.), but this is the gist.
+
+---
+
+### Hybrid Decode Handler
+
+Decode behavior switches between PD-style and PDV-style based on how many requests are active:
 
 ```python
 def _handle_decode_batch(self, batch: List[Request]):
     current_concurrency = len(self.scheduler.get_active_requests())
 
     if current_concurrency <= 3:
-        # PD-MODE: Atomic processing for low concurrency
+        # Low concurrency: behave like PD
         return self._handle_decode_batch_pd_style(batch)
     else:
-        # PDV-MODE: Parallel processing for high concurrency
+        # Higher concurrency: use full 3-lane PDV
         return self._handle_decode_batch_pdv_style(batch)
 ```
 
+So from the outside:
+
+* Users don’t need to toggle any “modes”.
+* As load ramps up, PDV automatically switches to the more parallel scheduling path.
+
+---
+
 ## Setup and Usage
 
-### Prerequisites
-- Python 3.8+
-- PyTorch 2.0+
-- CUDA-compatible GPU
-- HuggingFace Transformers
+### Requirements
 
-### Installation
+* Python 3.8+
+* PyTorch 2.0+
+* CUDA-capable GPU
+* HuggingFace Transformers
+
+### Install
+
 ```bash
-git clone https://github.com/your-org/pdverify.git
+git clone https://github.com/therealnaveenkamal/pdverify.git
 cd pdverify
 pip install -r requirements.txt
 ```
 
-### Running Benchmarks
+For editable/development mode:
+
 ```bash
-# Low concurrency test
-python run_low_concurrency_benchmark.py
+git clone https://github.com/therealnaveenkamal/pdverify.git
+cd pdverify
+pip install -e .
+```
 
-# Medium concurrency test
-python run_medium_concurrency_benchmark.py
+### Running Benchmarks
 
-# High concurrency test
-python run_high_concurrency_benchmark.py
-
-# Comprehensive test across all concurrency levels
+```bash
+# Sweep across all concurrency levels
 python comprehensive_benchmark.py
 ```
 
 ### Configuration
-Modify `src/utils/config.py` to adjust:
-- Model selection (draft/verifier pairs)
-- Batch sizes and queue depths
-- Stream configuration
-- Scheduler priorities
+
+Most knobs live in `src/utils/config.py`:
+
+* Draft / verifier model pairs
+* Batch sizes and queue depth limits
+* CUDA stream selection
+* Scheduler thresholds and priority logic
+
+---
 
 ## Architecture Evolution
 
-### Version History
-- **v1.0**: Basic speculative decoding (Baseline)
-- **v1.1**: PD architecture (2-lane disaggregation)
-- **v2.0**: PDV architecture (3-lane disaggregation + hybrid processing)
+### Versions
 
-### Future Enhancements
-- Multi-GPU support with cross-GPU stream synchronization
-- Dynamic batch size adaptation
-- Advanced ML-based scheduling algorithms
-- Memory-aware lane distribution
+* **v1.0** – Baseline speculative decoding, single-lane design
+* **v1.1** – Prefill–Decode (PD): 2-lane disaggregation
+* **v2.0** – PDV: 3-lane disaggregation + hybrid mode based on concurrency
+
+### Planned / Possible Next Steps
+
+* Multi-GPU routing with cross-GPU stream sync
+* Adaptive batch sizing based on queue depth / latency SLOs
+* Learned (or at least ML-assisted) scheduling and lane ordering
+* More explicit memory-aware scheduling (e.g., KV cache pressure)
+
+---
 
 ## Contributing
 
-We welcome contributions! Areas of interest:
-- Performance optimizations
-- Additional benchmark scenarios
-- Multi-GPU support
-- Advanced scheduling algorithms
+Contributions are welcome. Useful directions include:
 
-### Development Setup
+* Profiling + kernel-level optimization
+* Better benchmark coverage (different models, longer sequences, real traces)
+* Multi-GPU support and sharding strategies
+* Smarter scheduling policies / heuristics
+
+### Dev Setup
+
 ```bash
-# Clone and setup
-git clone https://github.com/your-org/pdverify.git
+# Clone + editable install
+git clone https://github.com/therealnaveenkamal/pdverify.git
 cd pdverify
 pip install -e .
 
-# Run tests
+# Tests
 python -m pytest tests/
 
-# Format code
+# Formatting
 black src/
 isort src/
 ```
 
 ---
 
-**PD-Verify: Where intelligent architecture meets maximum performance.** 🚀
+**PD-Verify is an experiment in “taking prefill/decode/verify seriously” as separate workloads, not just one big loop.**
 
-*Built for the future of speculative decoding.*
+If you run this on your own models / hardware and get interesting numbers (better or worse), PRs and issues are appreciated.
