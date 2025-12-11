@@ -62,6 +62,21 @@ class Request:
         self.result_text = None
         self.generated_tokens = []
         self._input_ids = None
+        
+        # State management (KV Caches)
+        # These hold the PastKeyValues from the transformers models
+        self.kv_cache_draft: Any = None
+        self.kv_cache_verifier: Any = None
+        
+        # Logits from the last verification step (needed to verify the next first draft token)
+        self.last_verifier_logits: Any = None
+        self.last_draft_logits: Any = None
+        
+        # Detailed Metrics
+        self.prefill_start_time: float = 0.0
+        self.prefill_end_time: float = 0.0
+        self.decode_start_time: float = 0.0 # Time when first draft generated
+        self.decode_end_time: float = 0.0   # Time when request completed
     
     def get_acceptance_ratio(self) -> float:
         """Calculate acceptance ratio for this request."""

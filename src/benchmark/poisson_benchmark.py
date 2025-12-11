@@ -143,9 +143,23 @@ class PoissonBenchmark:
                         token_latency = (token_time - request_start) * 1000
                         token_latencies_ms.append(token_latency)
 
+                # Calculate phases
+                prefill_ms = 0.0
+                if hasattr(engine_req, 'prefill_start_time') and hasattr(engine_req, 'prefill_end_time') and engine_req.prefill_end_time > 0:
+                    prefill_ms = (engine_req.prefill_end_time - engine_req.prefill_start_time) * 1000
+                
+                decode_ms = 0.0
+                if hasattr(engine_req, 'decode_start_time') and hasattr(engine_req, 'decode_end_time') and engine_req.decode_end_time > 0:
+                    decode_ms = (engine_req.decode_end_time - engine_req.decode_start_time) * 1000
+                elif hasattr(engine_req, 'decode_start_time') and engine_req.decode_start_time > 0:
+                    # Fallback if decode end not set (e.g. error)
+                    decode_ms = (end_time - engine_req.decode_start_time) * 1000
+
                 result = {
                     "request_id": benchmark_req.request_id,
                     "request_latency_ms": request_latency_ms,
+                    "prefill_ms": prefill_ms,
+                    "decode_ms": decode_ms,
                     "token_latencies_ms": token_latencies_ms,
                     "tokens_generated": getattr(engine_req, 'tokens_generated', 0),
                     "tokens_accepted": getattr(engine_req, 'tokens_accepted', 0),
@@ -198,6 +212,9 @@ class PoissonBenchmark:
         # Wait for all requests to complete
         while len(active_requests) > 0:
             time.sleep(0.01)  # Small sleep to avoid busy waiting
+            # Timeout safety
+            if time.time() - start_time > (self.duration_seconds + 30 if self.duration_seconds else 120):
+                 break
 
         total_time = time.time() - start_time
         logger.info(f"Benchmark completed in {total_time:.1f} seconds")
@@ -242,6 +259,7 @@ class PoissonBenchmark:
         throughput_tps = total_tokens / total_time if total_time > 0 else 0.0
         
         return {
+            "detailed_list": results, # Return full detailed list
             "total_requests": len(results),
             "successful_requests": len(successful),
             "failed_requests": len(results) - len(successful),

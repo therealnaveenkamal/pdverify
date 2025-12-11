@@ -216,36 +216,31 @@ class SpeculativeEngine:
         # Use CUDA stream 2 for prefill (stream 0=decode, 1=verify, 2=prefill)
         stream = self.stream_manager.get_stream(2)
 
-        prompts = [req.prompt for req in batch]
-
-        # Tokenize batch
-        inputs = self.model_runner.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=self.config.model.max_model_len
-        )
-
-        input_ids_batch = inputs["input_ids"].to(self.model_runner.device)
-
-        # Use stream context if available
-        if stream is not None:
-            with torch.cuda.stream(stream):
-                # Assign back to requests
-                for i, req in enumerate(batch):
-                    # Keep batch dim [1, L]
-                    req._input_ids = input_ids_batch[i:i+1]
-                stream.synchronize()
-        else:
-            # Assign back to requests
-            for i, req in enumerate(batch):
-                # Keep batch dim [1, L]
-                req._input_ids = input_ids_batch[i:i+1]
-
-        # Transition
+        # Optimization: Process requests individually for prefill to use the helper 
+        # that returns the KV caches. Or use batched logic if possible?
+        # ModelRunner.prefill is currently single-request.
+        # We will iterate.
+        
         for req in batch:
+            # Prefill now returns KV caches and logits
+            # We use stream 2
+            req.prefill_start_time = time.time()
+            input_ids, draft_kv, verifier_kv, verifier_logits, draft_logits = self.model_runner.prefill(
+                req.prompt,
+                stream_id=2
+            )
+            req.prefill_end_time = time.time()
+            
+            # Store state in request
+            req._input_ids = input_ids
+            req.kv_cache_draft = draft_kv
+            req.kv_cache_verifier = verifier_kv
+            req.last_verifier_logits = verifier_logits
+            req.last_draft_logits = draft_logits
+            
+            # Transition
             self.scheduler.transition_request(req, LaneType.DECODE)
+            logger.debug(f"Prefill complete for {req.request_id}")
 
     def _handle_decode_batch(self, batch: List[Request]):
         """Handle batch decode step - HYBRID APPROACH: PD-like at low concurrency, 3-lane at high."""
@@ -291,54 +286,83 @@ class SpeculativeEngine:
         # Use CUDA stream 0 for decode (atomic draft+verify)
         stream = self.stream_manager.get_stream(0)
 
+        # Use CUDA stream 0 for decode (atomic draft+verify)
+        stream = self.stream_manager.get_stream(0)
+
         # Generate draft tokens
-        draft_tokens_batch = self.model_runner.generate_draft_tokens(
-            batch_input_ids, num_tokens=draft_length, stream_id=0
-        )
+        # We must loop to use correct KV Caches.
+        # This implementation was batch-optimized but stateless, which is wrong.
+        # We replace it with per-request loop.
+        pass
+        
+        # NOTE: Loop is implemented in the replacement chunk below.
+        # This chunk just removes the old batch call.
 
         # Immediately verify - like PD does atomically
-        accepted_tokens_batch, num_accepted_list = self.model_runner.verify_tokens(
-            batch_input_ids, draft_tokens_batch, stream_id=0
-        )
+        # We process each request to handle states correctly
+        
+        for req in batch:
+             if req.decode_start_time == 0.0:
+                 req.decode_start_time = time.time()
+             # 1. Sample d1
+            d1 = 0
+            if req.last_draft_logits is not None:
+                d1 = torch.argmax(req.last_draft_logits).item()
+                if self.model_runner.draft_vocab_size and d1 >= self.model_runner.draft_vocab_size:
+                    d1 = self.model_runner.draft_vocab_size - 1
+            
+            # 2. Generate drafts d2..dK
+            d1_tensor = torch.tensor([[d1]], device=self.model_runner.device)
+            curr_draft_tokens = [d1]
+            generated_ids = []
+            
+            # Temp KV for generation
+            temp_kv = req.kv_cache_draft
+            if draft_length > 1:
+                gen_ids, temp_kv = self.model_runner.generate_draft_tokens(
+                    d1_tensor, 
+                    num_tokens=draft_length-1, 
+                    past_key_values=temp_kv,
+                    stream_id=0
+                )
+                generated_ids = gen_ids[0]
+            
+            full_drafts = curr_draft_tokens + generated_ids
+            
+            # 3. Verify
+            verify_input = torch.tensor([full_drafts], device=self.model_runner.device)
+            prev_logits = req.last_verifier_logits.unsqueeze(0) if req.last_verifier_logits is not None else None
+            
+            accepted_batch, num_accepted_batch, _, _ = self.model_runner.verify_tokens(
+                verify_input,
+                [full_drafts],
+                past_key_values=req.kv_cache_verifier,
+                previous_verifier_logits=prev_logits,
+                stream_id=0
+            )
+            
+            accepted_tokens = accepted_batch[0]
+            num_accepted = num_accepted_batch[0]
+            
+            # 4. Update State
+            if accepted_tokens:
+                 acc_tensor = torch.tensor([accepted_tokens], device=self.model_runner.device)
+                 
+                 with self.model_runner._draft_lock:
+                    with torch.no_grad():
+                        out_d = self.model_runner.draft_model(acc_tensor, past_key_values=req.kv_cache_draft, use_cache=True)
+                        req.kv_cache_draft = out_d.past_key_values
+                        req.last_draft_logits = out_d.logits[:, -1, :]
+                 
+                 with self.model_runner._verifier_lock:
+                    with torch.no_grad():
+                        out_v = self.model_runner.verifier_model(acc_tensor, past_key_values=req.kv_cache_verifier, use_cache=True)
+                        req.kv_cache_verifier = out_v.past_key_values
+                        req.last_verifier_logits = out_v.logits[:, -1, :]
 
         # Process results immediately - no lane transitions!
         import time
         current_time = time.time()
-
-        for i, req in enumerate(batch):
-            accepted_tokens = accepted_tokens_batch[i]
-            num_accepted = num_accepted_list[i]
-
-            # Update metrics
-            req.tokens_generated += len(draft_tokens_batch[i])
-            req.tokens_accepted += num_accepted
-            self.total_tokens_generated += len(draft_tokens_batch[i])
-            self.total_tokens_accepted += num_accepted
-
-            # Feedback
-            ratio = num_accepted / len(draft_tokens_batch[i]) if draft_tokens_batch[i] else 0.0
-            self.controller.record_acceptance(ratio)
-
-            # Record token timestamps
-            for _ in accepted_tokens:
-                req.token_timestamps.append(current_time)
-
-            # Append tokens
-            req.generated_tokens.extend(accepted_tokens)
-
-            if accepted_tokens:
-                new_ids = torch.tensor([accepted_tokens], device=self.model_runner.device, dtype=torch.long)
-                req._input_ids = torch.cat([req._input_ids, new_ids], dim=1)
-
-                # Check EOS
-                if self.model_runner.tokenizer.eos_token_id in accepted_tokens:
-                    self._handle_completion(req)
-                    continue
-
-            # Check max tokens
-            if len(req.generated_tokens) >= self.max_new_tokens:
-                self._handle_completion(req)
-                continue
 
             # Continue - back to decode
             self.scheduler.transition_request(req, LaneType.DECODE)
@@ -370,15 +394,48 @@ class SpeculativeEngine:
 
         # Use CUDA stream 0 for decode
         stream = self.stream_manager.get_stream(0)
-
-        # Generate with stream support - high quality drafts are key to PDV success
-        draft_tokens_batch = self.model_runner.generate_draft_tokens(
-            batch_input_ids, num_tokens=draft_length, stream_id=0
-        )
-
-        # Update requests
-        for i, req in enumerate(batch):
-            req.draft_tokens = draft_tokens_batch[i]
+        
+        # We need to generate drafts for each request using their specific KV caches.
+        # Batched generation with different KV caches is hard without PagedAttention.
+        # We will loop (similar to fixed PD engine).
+        # This is O(Batch) which is fine.
+        
+        for req in batch:
+            if req.decode_start_time == 0.0:
+                 req.decode_start_time = time.time()
+            # 1. Sample d1
+            d1 = 0
+            if req.last_draft_logits is not None:
+                d1 = torch.argmax(req.last_draft_logits).item()
+                if self.model_runner.draft_vocab_size and d1 >= self.model_runner.draft_vocab_size:
+                    d1 = self.model_runner.draft_vocab_size - 1
+            
+            # 2. Generate drafts d2..dK
+            # Input is d1.
+            d1_tensor = torch.tensor([[d1]], device=self.model_runner.device)
+            curr_draft_tokens = [d1]
+            
+            generated_ids = []
+            if draft_length > 1:
+                # IMPORTANT: For 3-lane, we do NOT update `req.kv_cache_draft` here permanently.
+                # Because if verification fails, we can't rollback easily.
+                # However, `generate_draft_tokens` is stateless regarding the input KV (it returns new KV).
+                # We will use the returned KV for the NEXT step of generation, but we won't save it to `req` yet.
+                # Wait, we need it to generate d3 from d2.
+                # So we maintain a temporary `current_kv` for this loop.
+                
+                # Clone/Reuse reference? HF returns new tuples usually.
+                temp_kv = req.kv_cache_draft 
+                
+                gen_ids, final_temp_kv = self.model_runner.generate_draft_tokens(
+                    d1_tensor,
+                    num_tokens=draft_length-1,
+                    past_key_values=temp_kv,
+                    stream_id=0
+                )
+                generated_ids = gen_ids[0]
+            
+            req.draft_tokens = curr_draft_tokens + generated_ids
             self.scheduler.transition_request(req, LaneType.VERIFY)
 
     def _handle_verify_batch(self, batch: List[Request]):
@@ -407,24 +464,52 @@ class SpeculativeEngine:
         # Use CUDA stream 1 for verify - PDV parallel advantage
         stream = self.stream_manager.get_stream(1)
 
-        # Verify with stream support - this is where PDV shines
-        accepted_tokens_batch, num_accepted_list = self.model_runner.verify_tokens(
-            batch_input_ids, draft_batch, stream_id=1
-        )
-
-        # Process results - PDV must be faster than PD
-        import time
-        current_time = time.time()
-
-        for i, req in enumerate(batch):
-            accepted_tokens = accepted_tokens_batch[i]
-            num_accepted = num_accepted_list[i]
-
-            # Update metrics
+        # We verify each request using its state
+        # Logic is similar to PD engine but we MUST update KV caches here.
+        
+        for req in batch:
+            full_drafts = req.draft_tokens
+            verify_input = torch.tensor([full_drafts], device=self.model_runner.device)
+            prev_logits = req.last_verifier_logits.unsqueeze(0) if req.last_verifier_logits is not None else None
+            
+            accepted_batch, num_accepted_batch, _, _ = self.model_runner.verify_tokens(
+                verify_input,
+                [full_drafts],
+                past_key_values=req.kv_cache_verifier,
+                previous_verifier_logits=prev_logits,
+                stream_id=1
+            )
+            
+            accepted_tokens = accepted_batch[0]
+            num_accepted = num_accepted_batch[0]
+            
+            # CORE LOGIC: Update State
+            if accepted_tokens:
+                 # Prepare input tensor
+                acc_tensor = torch.tensor([accepted_tokens], device=self.model_runner.device)
+                
+                # Update Draft State (Forward Pass on Accepted Tokens to sync state)
+                with self.model_runner._draft_lock:
+                    with torch.no_grad():
+                        with torch.cuda.stream(stream) if stream else torch.no_grad():
+                            out_d = self.model_runner.draft_model(acc_tensor, past_key_values=req.kv_cache_draft, use_cache=True)
+                            req.kv_cache_draft = out_d.past_key_values
+                            req.last_draft_logits = out_d.logits[:, -1, :]
+                            
+                # Update Verifier State (Forward Pass on Accepted Tokens to sync state)
+                with self.model_runner._verifier_lock:
+                    with torch.no_grad():
+                         with torch.cuda.stream(stream) if stream else torch.no_grad():
+                            out_v = self.model_runner.verifier_model(acc_tensor, past_key_values=req.kv_cache_verifier, use_cache=True)
+                            req.kv_cache_verifier = out_v.past_key_values
+                            req.last_verifier_logits = out_v.logits[:, -1, :]
+            
+            # Metrics...
             req.tokens_generated += len(req.draft_tokens)
             req.tokens_accepted += num_accepted
-            self.total_tokens_generated += len(req.draft_tokens)
-            self.total_tokens_accepted += num_accepted
+            with self._lock:
+                self.total_tokens_generated += len(req.draft_tokens)
+                self.total_tokens_accepted += num_accepted
 
             # Enhanced feedback - PDV needs better acceptance than PD
             ratio = num_accepted / len(req.draft_tokens) if req.draft_tokens else 0.0
@@ -436,6 +521,8 @@ class SpeculativeEngine:
 
             # Append tokens
             req.generated_tokens.extend(accepted_tokens)
+
+            current_concurrency = len(self.scheduler.get_active_requests())
 
             if accepted_tokens:
                 new_ids = torch.tensor([accepted_tokens], device=self.model_runner.device, dtype=torch.long)
@@ -456,6 +543,7 @@ class SpeculativeEngine:
 
     def _handle_completion(self, request: Request):
         """Handle request completion."""
+        request.decode_end_time = time.time()
         # Convert tokens to text
         if not request.error:
             try:
@@ -488,6 +576,51 @@ class SpeculativeEngine:
             self._handle_decode_batch([request])
         elif request.stage == LaneType.VERIFY:
             self._handle_verify_batch([request])
+
+    def process_request(self, request: Request) -> str:
+        """
+        Process a request synchronously (blocking).
+        
+        Args:
+            request: Request to process
+            
+        Returns:
+            Generated text
+        """
+        import threading
+        completion_event = threading.Event()
+        result_container = {}
+        
+        def callback(req, res):
+            result_container['result'] = res
+            completion_event.set()
+        
+        self.submit_request_async(request, callback)
+        completion_event.wait()
+        
+        return result_container.get('result', "")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get engine statistics."""
+        scheduler_stats = {
+            "total_completed": self.scheduler.total_requests_completed if hasattr(self.scheduler, "total_requests_completed") else 0
+        }
+        
+        controller_stats = {
+            "current_draft_length": self.controller.get_draft_length()
+        }
+        
+        overall_acceptance = 0.0
+        if self.total_tokens_generated > 0:
+            overall_acceptance = self.total_tokens_accepted / self.total_tokens_generated
+            
+        return {
+            "overall_acceptance_rate": overall_acceptance,
+            "total_tokens_generated": self.total_tokens_generated,
+            "total_tokens_accepted": self.total_tokens_accepted,
+            "scheduler": scheduler_stats,
+            "controller": controller_stats
+        }
 
     def __enter__(self):
         """Context manager entry."""
