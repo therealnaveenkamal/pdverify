@@ -80,12 +80,23 @@ class PDEngine:
         self.max_new_tokens = config.model.max_new_tokens
         self.batch_size = config.scheduler.batch_size
         
+        # Concurrency control
+        self.num_active_decode_requests = 0
+        self._prefill_thread = None
+        self._decode_thread = None
+        
         logger.info(f"PDEngine initialized with 2-lane architecture and batch size {self.batch_size}")
     
     def start(self):
         """Start the engine and worker threads."""
         logger.info("Starting PDEngine...")
         self.model_runner.load_models()
+        
+        # Verify models loaded
+        if self.model_runner.draft_model is None:
+            logger.error("Draft model is None after loading!")
+            raise RuntimeError("Draft model failed to load")
+            
         self.is_running = True
         
         # Start separate worker threads for prefill and decode
@@ -106,10 +117,10 @@ class PDEngine:
         with self._queue_condition:
             self._queue_condition.notify_all()
         
-        if self.prefill_worker_thread:
-            self.prefill_worker_thread.join(timeout=2.0)
-        if self.decode_worker_thread:
-            self.decode_worker_thread.join(timeout=2.0)
+        if self._prefill_thread:
+            self._prefill_thread.join(timeout=2.0)
+        if self._decode_thread:
+            self._decode_thread.join(timeout=2.0)
         
         self.stream_manager.cleanup()
         self.model_runner.cleanup()
@@ -143,6 +154,87 @@ class PDEngine:
             self._queue_condition.notify()
         
         logger.debug(f"Queued request {request.request_id} to prefill lane")
+
+
+    def _prefill_worker_loop(self):
+        """Worker loop for prefill lane."""
+        logger.info("Prefill worker loop started")
+        while self.is_running:
+            request = None
+            with self._queue_condition:
+                while self.is_running and len(self.prefill_queue) == 0:
+                    self._queue_condition.wait(timeout=0.1)
+                
+                if not self.is_running:
+                    break
+                
+                # Wait for capacity in decode lane (Backpressure)
+                while self.is_running and self.num_active_decode_requests >= self.batch_size:
+                    self._queue_condition.wait(timeout=0.1)
+                    
+                if not self.is_running:
+                    break
+                    
+                if len(self.prefill_queue) > 0 and self.num_active_decode_requests < self.batch_size:
+                    request = self.prefill_queue.popleft()
+                    # Increment active count BEFORE processing to reserve slot
+                    self.num_active_decode_requests += 1
+            
+
+            if request:
+                try:
+                    self._handle_prefill(request)
+                except Exception as e:
+                    logger.error(f"Error in prefill worker: {e}", exc_info=True)
+                    request.error = str(e)
+                    self._complete_request(request) # This will decrement the count
+
+        logger.info("Prefill worker loop stopped")
+
+    def _decode_worker_loop(self):
+        """Worker loop for decode lane (supports batching)."""
+        logger.info("Decode worker loop started")
+        while self.is_running:
+            batch = []
+            with self._queue_condition:
+                while self.is_running and len(self.decode_queue) == 0:
+                    self._queue_condition.wait(timeout=0.1)
+                
+                if not self.is_running:
+                    break
+                
+                # Form a batch up to batch_size
+                while len(self.decode_queue) > 0 and len(batch) < self.batch_size:
+                    batch.append(self.decode_queue.popleft())
+            
+            if batch:
+                # print(f"DEBUG: Processing decode batch of size {len(batch)}")
+                try:
+                    self._handle_decode_batch(batch)
+                except Exception as e:
+                    # If we are shutting down, suppress likely resource errors
+                    if not self.is_running:
+                        logger.debug(f"Suppressing error during shutdown: {e}")
+                        break
+                    
+                    logger.error(f"Error in decode worker: {e}", exc_info=True)
+                    print(f"DEBUG: Error in decode batch: {e}")
+                    for req in batch:
+                        req.error = str(e)
+                        self._complete_request(req)
+
+        logger.info("Decode worker loop stopped")
+
+    def _trigger_callback(self, request: Request, result_text: str):
+        """Trigger completion callback."""
+        with self._lock:
+            callback = self.request_callbacks.pop(request.request_id, None)
+        
+        if callback:
+            try:
+                callback(request, result_text)
+            except Exception as e:
+                logger.error(f"Error in callback: {e}")
 
     def _handle_prefill(self, request: Request):
         """Handle prefill stage."""
@@ -214,7 +306,7 @@ class PDEngine:
         # We construct input batch.
         input_ids_batch = torch.tensor([[d] for d in d1_list], device=self.model_runner.device, dtype=torch.long)
         
-        stream = self.model_runner.stream_manager.stream_map[1] if self.model_runner.stream_manager else None
+        stream = self.model_runner.stream_manager.get_stream(1) if self.model_runner.stream_manager else None
         
         # Prepare KV caches for batch
         # Assuming model_runner handles list of KV or we pass one by one
@@ -281,7 +373,11 @@ class PDEngine:
                 stream_id=1
             )
             
+            
             accepted_tokens = accepted_batch[0]
+            # print(f"DEBUG: Req {req.request_id} Accepted: {len(accepted_tokens)} tokens. Total len: {len(req.generated_tokens)}")
+            if len(accepted_tokens) == 0:
+                print(f"DEBUG: Req {req.request_id} STUCK! Accepted 0 tokens. Drafts: {len(full_drafts)}")
             
             # 3. Update Request State (Critical: KV Rollback/Append)
             # We have the accepted tokens.
@@ -289,6 +385,7 @@ class PDEngine:
             # The cleanest way is to run a forward pass on `accepted_tokens` using the ORIGINAL KV caches.
             # This updates the cache and gives us the fresh Last Logits.
             
+
             if accepted_tokens:
                 # Prepare input tensor
                 acc_tensor = torch.tensor([accepted_tokens], device=self.model_runner.device)
@@ -304,7 +401,7 @@ class PDEngine:
                 # Update Verifier State
                 with self.model_runner._verifier_lock:
                     with torch.no_grad():
-                         with torch.cuda.stream(stream) if stream else torch.no_grad():
+                        with torch.cuda.stream(stream) if stream else torch.no_grad():
                             out_v = self.model_runner.verifier_model(acc_tensor, past_key_values=req.kv_cache_verifier, use_cache=True)
                             req.kv_cache_verifier = out_v.past_key_values
                             req.last_verifier_logits = out_v.logits[:, -1, :]
@@ -314,13 +411,20 @@ class PDEngine:
                 req.tokens_generated += len(full_drafts)
                 req.tokens_accepted += len(accepted_tokens)
                 
+                # Record token timestamps for benchmark metrics
+                current_time = time.time()
+                if not hasattr(req, 'token_timestamps'):
+                    req.token_timestamps = []
+                for _ in accepted_tokens:
+                    req.token_timestamps.append(current_time)
+                
                 # Update total metrics
                 with self._lock:
                     self.total_tokens_generated += len(full_drafts)
                     self.total_tokens_accepted += len(accepted_tokens)
                 
                 # Check for EOS
-                if self.model_runner.tokenizer.eos_token_id in accepted_tokens:
+                if self.is_running and self.model_runner.tokenizer and self.model_runner.tokenizer.eos_token_id in accepted_tokens:
                     self._complete_request(req)
                 
                 # Check max tokens
@@ -344,16 +448,40 @@ class PDEngine:
     def _complete_request(self, request: Request):
         """Complete a request."""
         request.decode_end_time = time.time()
-        # Decode result
-        result_text = self.model_runner.tokenizer.decode(request.generated_tokens, skip_special_tokens=True)
-        request.completion_time = time.time()
-        self._trigger_callback(request, result_text)
+        
+        # Decode result - handle potential None tokenizer during shutdown
+        result_text = ""
+        if self.model_runner.tokenizer:
+            try:
+                result_text = self.model_runner.tokenizer.decode(request.generated_tokens, skip_special_tokens=True)
+            except Exception:
+                pass
+        
+        # Callback
+        if self.request_callbacks.get(request.request_id):
+            import threading
+            threading.Thread(target=self._trigger_callback, args=(request, result_text)).start()
+
+        # Update active count and notify
+        with self._queue_condition:
+            self.num_active_decode_requests -= 1
+            self._queue_condition.notify_all()
+            
+        logger.debug(f"Request {request.request_id} completed. Active: {self.num_active_decode_requests}")
         
         # Clean up large tensors
-        del request.kv_cache_draft
-        del request.kv_cache_verifier
-        del request.last_draft_logits
-        del request.last_verifier_logits
+        try:
+            if hasattr(request, 'kv_cache_draft'):
+                del request.kv_cache_draft
+            if hasattr(request, 'kv_cache_verifier'):
+                del request.kv_cache_verifier
+            if hasattr(request, 'last_draft_logits'):
+                del request.last_draft_logits
+            if hasattr(request, 'last_verifier_logits'):
+                del request.last_verifier_logits
+        except AttributeError:
+            pass # Already deleted or never existed
+            
         request.kv_cache_draft = None
         request.kv_cache_verifier = None
 

@@ -12,7 +12,7 @@ import torch
 import os
 from typing import Dict, List, Any
 
-from src.engine import SpeculativeEngine, BaselineEngine, PDEngine
+from src.engine import PDVLiteEngine, BaselineEngine, PDEngine
 from src.benchmark import PoissonBenchmark, get_sharegpt_prompts, load_question_jsonl
 from src.utils import get_performance_config
 
@@ -152,7 +152,7 @@ def main():
     engines = [
         ("Baseline", BaselineEngine),
         ("PD", PDEngine),
-        ("PDV", SpeculativeEngine)
+        ("PDV", PDVLiteEngine)
     ]
 
     for engine_name, engine_class in engines:

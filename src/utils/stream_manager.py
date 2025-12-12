@@ -47,8 +47,8 @@ class StreamManager:
         Returns:
             CUDA stream or None for CPU
         """
-        if lane_id >= self.num_streams:
-            logger.warning(f"Lane ID {lane_id} exceeds available streams")
+        if lane_id >= self.num_streams or lane_id >= len(self.streams):
+            logger.warning(f"Lane ID {lane_id} exceeds available streams (count={len(self.streams)})")
             return None
         return self.streams[lane_id]
     

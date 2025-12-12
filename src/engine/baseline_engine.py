@@ -220,7 +220,6 @@ class BaselineEngine:
         request.last_draft_logits = draft_logits
         
         generated_tokens_list = []
-        import time
         request.request_start_time = request.created_at if request.created_at > 0 else time.time()
         
         # 2. DECODE LOOP
@@ -318,7 +317,7 @@ class BaselineEngine:
         
         return result_text
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self):
         """Get engine statistics."""
         return {
             "total_tokens_generated": self.total_tokens_generated,

@@ -13,7 +13,7 @@ from src.benchmark.poisson_benchmark import PoissonBenchmark, get_sharegpt_promp
 from src.utils.config import get_default_config, get_test_config, get_cpu_config
 from src.engine.baseline_engine import BaselineEngine
 from src.engine.pd_engine import PDEngine
-from src.engine.speculative_engine import SpeculativeEngine
+from src.engine.speculative_engine import PDVLiteEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ConcurrencyBenchmark")
@@ -92,7 +92,8 @@ class GPUMonitor:
 def run_concurrency_benchmark(
     concurrency_levels: List[int],
     duration_seconds: int = 30,
-    prompts: List[str] = None
+    prompts: List[str] = None,
+    config = None
 ):
     """
     Run benchmark across different concurrency levels for all engines.
@@ -102,23 +103,26 @@ def run_concurrency_benchmark(
     
     # Engines to test
     engines = {
-        "Baseline": BaselineEngine,
+        # "Baseline": BaselineEngine,
         "PD": PDEngine,
-        "PDV": SpeculativeEngine
+        "PDV": PDVLiteEngine
     }
     
     summary_results = []
     detailed_results = [] # Per request stats
     
     # Config
-    import torch
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda":
-        base_config = get_default_config()
+    if config is None: # If config is not passed, determine it here
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            base_config = get_default_config()
+        else:
+            base_config = get_cpu_config()
+            
+        base_config.model.max_new_tokens = 50 # Keep it short for faster benchmarking
     else:
-        base_config = get_cpu_config()
-        
-    base_config.model.max_new_tokens = 50 # Keep it short for faster benchmarking
+        base_config = config # Use the passed config
     
     for engine_name, engine_cls in engines.items():
         logger.info(f" Benchmarking Engine: {engine_name}")
@@ -132,18 +136,25 @@ def run_concurrency_benchmark(
             # Update config
             current_config = copy.deepcopy(base_config)
             current_config.scheduler.batch_size = concurrency
-            current_config.scheduler.max_queue_size = concurrency * 10
+            current_config.scheduler.max_queue_size = concurrency * 100
             
             # Initialize Engine
             engine = engine_cls(current_config)
             gpu_monitor = GPUMonitor(0.1)
             
             try:
+                print(f"DEBUG: Starting engine for C={concurrency}...")
                 engine.start()
+                if not engine.is_running:
+                     logger.error("Engine failed to start!")
+                     continue
+                print("DEBUG: Engine started. Starting GPU monitor...")
                 gpu_monitor.start()
                 
                 # Flood with requests
-                arrival_rate = float(concurrency) * 4.0 
+                # arrival_rate = concurrency * 4.0 # High load - Too high for 24s latency
+                arrival_rate = concurrency * 0.05 # Reduced load to ensure completion
+                print(f"DEBUG: Generating requests with rate {arrival_rate}...")
                 
                 benchmark = PoissonBenchmark(
                     prompts=prompts,
@@ -153,47 +164,14 @@ def run_concurrency_benchmark(
                 )
                 
                 requests = benchmark.generate_requests()
-                
-                # Inject a custom collector into run_benchmark to capture detailed stats?
-                # PoissonBenchmark.run_benchmark returns aggregate list. 
-                # BUT the `results` list inside run_benchmark stores limited fields.
-                # We need to hack it or update PoissonBenchmark to return raw request objects?
-                # Actually, run_benchmark returns `token_latency_ms`.
-                # We need timestamps.
-                # Let's Modify `PoissonBenchmark` simply by monkey-patching or just subclassing?
-                # Easier: Modify run_benchmark output in `poisson_benchmark.py`? No, let's keep it clean.
-                
-                # We will access the raw stats from the return if we modify `PoissonBenchmark`.
-                # Wait, I cannot modify `poisson_benchmark.py` easily inside this script.
-                # I will subclass `PoissonBenchmark` here.
+                print(f"DEBUG: Generated {len(requests)} requests. Running benchmark...")
                 
                 stats = benchmark.run_benchmark(
                     engine, 
                     requests=requests,
                     max_concurrent=concurrency 
                 )
-                
-                # Wait. run_benchmark returns a dict of aggregates only.
-                # I need granular data.
-                # I will assume `run_benchmark` logic is mostly insufficient for per-request *breakdown* 
-                # unless I parse the raw results. But `run_benchmark` encapsulates collecting them.
-                # I will ignore `stats` (summary) for the detailed file and try to extract more?
-                # No, I can't.
-                
-                # Ok, I will accept that I can't get the per-request breakdown WITHOUT modifying `poisson_benchmark.py`
-                # to return the raw list.
-                # But wait! I edited `Request` object to store timestamps.
-                # Those requests are passed IN to `run_benchmark`.
-                # Does `run_benchmark` modify them in place? Yes.
-                # `requests` list still holds the Request objects?
-                # `requests` holds `BenchmarkRequest`.
-                # Inside `run_benchmark`, `active_requests` holds the mapping.
-                # The engine modifies the `Request` (engine object), not `BenchmarkRequest`.
-                # The `Request` object is created INSIDE `run_benchmark`.
-                
-                # SOLUTION: I must modify `poisson_benchmark.py` to return the detailed result list, NOT just the summary dict.
-                # I will do that in the NEXT step.
-                # For now, I will create this script assuming `stats` contains a "raw_results" key.
+                print("DEBUG: Benchmark run finished.")
                 
                 if "error" in stats:
                      logger.error(f"   Benchmark Failed: {stats['error']}")
@@ -261,4 +239,10 @@ if __name__ == "__main__":
     
     print(f"Running benchmark for levels: {levels}")
     
-    run_concurrency_benchmark(levels, duration_seconds=args.duration)
+    from src.utils.config import get_performance_config # Use performance config for realistic benchmarking
+    config = get_performance_config()
+    
+    # Allow overriding max_new_tokens for faster benchmark if needed
+    config.model.max_new_tokens = 20 # Reduced to 20 to allow C=64 to finish within timeout
+    
+    run_concurrency_benchmark(levels, duration_seconds=args.duration, config=config)

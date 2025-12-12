@@ -118,7 +118,7 @@ class Lane:
             True if added successfully, False if queue is full
         """
         if len(self.queue) >= self.max_size:
-            logger.warning(f"{self.lane_type.name} lane queue full, rejecting request {request.request_id}")
+            logger.debug(f"{self.lane_type.name} lane queue full, rejecting request {request.request_id}")
             self.total_rejected += 1
             return False
         

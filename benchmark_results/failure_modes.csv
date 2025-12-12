@@ -1,0 +1,13 @@
+Config,Concurrency,TPS Degradation,Latency Degradation,PD GPU Util,PDV GPU Util,Reason
+TinyLlama-TinyLlama,2,-1.2%,-5.3%,15.4%,15.8%,Overhead exceeds parallelization benefits
+TinyLlama-TinyLlama,6,-0.5%,-9.9%,27.9%,28.1%,Overhead exceeds parallelization benefits
+TinyLlama-TinyLlama,8,-0.5%,-5.0%,38.9%,39.5%,Overhead exceeds parallelization benefits
+TinyLlama-TinyLlama,10,-0.5%,-7.3%,42.4%,42.5%,Overhead exceeds parallelization benefits
+TinyLlama-TinyLlama,12,-0.6%,-12.6%,54.7%,54.9%,Overhead exceeds parallelization benefits
+TinyLlama-TinyLlama,16,-5.9%,-13.1%,68.4%,62.1%,Overhead exceeds parallelization benefits
+TinyLlama-Llama7B,10,-0.1%,-14.1%,42.2%,43.1%,Overhead exceeds parallelization benefits
+TinyLlama-Llama7B,12,-0.6%,-7.2%,53.6%,53.4%,Overhead exceeds parallelization benefits
+TinyLlama-CodeLlama34B,6,-1.0%,-10.0%,29.3%,28.9%,Overhead exceeds parallelization benefits
+TinyLlama-CodeLlama34B,8,-0.1%,-5.8%,42.0%,42.1%,Overhead exceeds parallelization benefits
+TinyLlama-CodeLlama34B,10,0.1%,-8.1%,46.5%,45.0%,Overhead exceeds parallelization benefits
+TinyLlama-CodeLlama34B,12,-0.6%,-8.1%,57.1%,56.9%,Overhead exceeds parallelization benefits

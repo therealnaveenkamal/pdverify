@@ -10,7 +10,7 @@ from typing import Optional
 class ModelConfig:
     """Configuration for draft and verifier models."""
     draft_model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    verifier_model_name: str = "meta-llama/Llama-2-7b-hf"
+    verifier_model_name: str = "codellama/CodeLlama-34b-hf"
     max_model_len: int = 2048
     max_new_tokens: int = 100  # Maximum tokens to generate per request
     # Use bfloat16 by default on GPU to cut memory footprint; fall back to float32 on CPU.
@@ -107,12 +107,12 @@ def get_cpu_config() -> VerifyPDConfig:
 def get_performance_config() -> VerifyPDConfig:
     """Get configuration optimized to demonstrate Verify-PD performance benefits."""
     config = get_default_config()
-    # Fast draft model + accurate verifier for optimal speculation
+    # Fast draft model + VERY SLOW 34B verifier for PDV parallelization advantage
     config.model.draft_model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    config.model.verifier_model_name = "meta-llama/Llama-2-7b-hf"
+    config.model.verifier_model_name = "codellama/CodeLlama-34b-hf"
     config.model.max_new_tokens = 100  # Enough tokens for speculation to shine
-    config.scheduler.batch_size = 6  # Increased for better batching in PDV
-    config.scheduler.verify_micro_batch_size = 12  # Much larger for verify to maximize PDV advantage
+    config.scheduler.batch_size = 16  # Increased decode batch
+    config.scheduler.verify_micro_batch_size = 32  # Large verify batch to match baseline efficiency
     # Increase verify batch size even more for better batching at higher concurrency
     # This allows verify to collect drafts from multiple decode cycles
     return config

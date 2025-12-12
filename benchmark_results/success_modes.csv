@@ -1,0 +1,20 @@
+Config,Concurrency,TPS Improvement,Latency Improvement,PD GPU Util,PDV GPU Util,Reason
+TinyLlama-TinyLlama,1,2.7%,15.2%,8.2%,9.1%,Moderate improvement
+TinyLlama-TinyLlama,32,12.4%,20.7%,72.8%,70.8%,High concurrency + efficient parallelization
+TinyLlama-TinyLlama,64,502.9%,6.9%,72.9%,70.9%,High concurrency + efficient parallelization
+TinyLlama-TinyLlama,72,397.0%,34.9%,73.7%,71.9%,High concurrency + efficient parallelization
+TinyLlama-TinyLlama,84,1054.9%,1.7%,74.2%,70.7%,Moderate improvement
+TinyLlama-TinyLlama,96,1043.7%,22.6%,74.2%,72.8%,High concurrency + efficient parallelization
+TinyLlama-TinyLlama,128,3265.7%,39.7%,71.6%,72.5%,High concurrency + efficient parallelization
+TinyLlama-Llama7B,1,3.7%,17.3%,9.2%,9.5%,Moderate improvement
+TinyLlama-Llama7B,32,26.1%,20.7%,68.2%,66.4%,High concurrency + efficient parallelization
+TinyLlama-Llama7B,64,753.6%,20.0%,66.8%,67.0%,High concurrency + efficient parallelization
+TinyLlama-Llama7B,72,1342.9%,38.5%,68.2%,64.9%,High concurrency + efficient parallelization
+TinyLlama-Llama7B,84,2960.6%,41.3%,65.9%,64.5%,High concurrency + efficient parallelization
+TinyLlama-CodeLlama34B,1,2.7%,20.4%,7.3%,7.5%,Moderate improvement
+TinyLlama-CodeLlama34B,2,2.1%,9.2%,12.3%,13.9%,Moderate improvement
+TinyLlama-CodeLlama34B,32,17.5%,20.8%,73.2%,70.4%,High concurrency + efficient parallelization
+TinyLlama-CodeLlama34B,72,951.5%,21.8%,72.7%,68.3%,High concurrency + efficient parallelization
+TinyLlama-CodeLlama34B,84,1590.0%,-23.6%,73.4%,72.3%,Moderate improvement
+TinyLlama-CodeLlama34B,96,1590.0%,21.1%,72.7%,71.4%,High concurrency + efficient parallelization
+TinyLlama-CodeLlama34B,128,3097.3%,42.9%,73.3%,71.4%,High concurrency + efficient parallelization
