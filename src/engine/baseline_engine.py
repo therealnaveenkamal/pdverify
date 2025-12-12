@@ -55,14 +55,13 @@ class BaselineEngine:
         
         # Engine state
         self.is_running = False
-        self.worker_threads: List[threading.Thread] = []
-        self.max_workers = config.scheduler.batch_size 
+        self.worker_thread = None  # Single unified worker (fair comparison with PD/PDV)
+        self.batch_size = config.scheduler.batch_size
         
         # Request queue
         self.request_queue: deque = deque()
         self.request_callbacks: Dict[str, Callable] = {}
         self._lock = threading.Lock()
-        self._queue_condition = threading.Condition(self._lock)
         
         # Metrics
         self.total_tokens_generated = 0
@@ -72,34 +71,32 @@ class BaselineEngine:
         self.max_new_tokens = config.model.max_new_tokens
         self.draft_length = config.controller.initial_draft_length
         
-        logger.info(f"BaselineEngine initialized with {self.max_workers} workers")
+        logger.info(f"BaselineEngine initialized with SINGLE THREAD (fair comparison), batch_size={self.batch_size}")
     
     def start(self):
-        """Start the engine and worker threads."""
-        logger.info("Starting BaselineEngine...")
+        """Start the engine and unified worker thread."""
+        logger.info("Starting BaselineEngine (single thread)...")
         self.model_runner.load_models()
         self.is_running = True
         
-        # Start worker threads
-        for i in range(self.max_workers):
-            thread = threading.Thread(target=self._worker_loop, args=(i,), daemon=True)
-            thread.start()
-            self.worker_threads.append(thread)
+        # Start single unified worker thread (fair comparison with PD/PDV)
+        self.worker_thread = threading.Thread(target=self._unified_worker_loop, daemon=True)
+        self.worker_thread.start()
         
-        logger.info(f"BaselineEngine started with {self.max_workers} workers")
+        logger.info("BaselineEngine started with single unified thread")
 
     def stop(self):
-        """Stop the engine and worker threads."""
+        """Stop the engine and worker thread."""
         logger.info("Stopping BaselineEngine...")
         self.is_running = False
         
-        # Wake up all workers
-        with self._queue_condition:
-            self._queue_condition.notify_all()
+        # Wait for worker to finish
+        if self.worker_thread:
+            self.worker_thread.join(timeout=5.0)
         
-        # Wait for workers to finish
-        for thread in self.worker_threads:
-            thread.join(timeout=2.0)
+        # Clear remaining requests
+        with self._lock:
+            self.request_queue.clear()
         
         self.stream_manager.cleanup()
         self.model_runner.cleanup()
@@ -126,10 +123,9 @@ class BaselineEngine:
         request.tokens_accepted = 0
         request.generated_tokens = []
         
-        # Add to queue
-        with self._queue_condition:
+        # Add to queue (simple lock, no condition variable)
+        with self._lock:
             self.request_queue.append(request)
-            self._queue_condition.notify()  # Wake up one worker
         
         logger.debug(f"Queued request {request.request_id}")
 
@@ -148,58 +144,67 @@ class BaselineEngine:
         
         return result_container.get('result', "")
 
-    def _worker_loop(self, worker_id: int):
-        """Worker loop that processes requests from the queue."""
-        logger.info(f"Worker {worker_id} started")
+    def _unified_worker_loop(self):
+        """
+        Unified worker loop that processes requests sequentially.
+        Uses single thread like PD/PDV for fair comparison.
+        """
+        logger.info("Unified worker loop started (single thread)")
         
         while self.is_running:
-            request = None
+            # Get batch of requests
+            batch = []
+            with self._lock:
+                while len(self.request_queue) > 0 and len(batch) < self.batch_size:
+                    batch.append(self.request_queue.popleft())
             
-            # Get request from queue
-            with self._queue_condition:
-                while self.is_running and len(self.request_queue) == 0:
-                    self._queue_condition.wait(timeout=0.1)
-                
-                if not self.is_running:
-                    break
-                
-                if len(self.request_queue) > 0:
-                    request = self.request_queue.popleft()
-            
-            if request is None:
+            if not batch:
+                # No requests, sleep briefly
+                time.sleep(0.00001)
                 continue
             
-            # Process request
-            try:
-                result_text = self._process_request(request)
-                request.completion_time = time.time()
-                
-                # Trigger callback
+            # Check if still running before processing
+            if not self.is_running:
+                # Re-queue requests
                 with self._lock:
-                    callback = self.request_callbacks.pop(request.request_id, None)
-                
-                if callback:
-                    try:
-                        callback(request, result_text)
-                    except Exception as e:
-                        logger.error(f"Error in callback for {request.request_id}: {e}")
-                        
-            except Exception as e:
-                logger.error(f"Error processing request {request.request_id}: {e}")
-                request.error = str(e)
-                request.completion_time = time.time()
-                
-                # Trigger callback with error
-                with self._lock:
-                    callback = self.request_callbacks.pop(request.request_id, None)
-                
-                if callback:
-                    try:
-                        callback(request, None)
-                    except Exception as e:
-                        logger.error(f"Error in error callback: {e}")
+                    for req in batch:
+                        self.request_queue.append(req)
+                break
+            
+            # Process each request in batch sequentially (like PD/PDV)
+            for request in batch:
+                try:
+                    result_text = self._process_request(request)
+                    request.completion_time = time.time()
+                    
+                    # Trigger callback
+                    with self._lock:
+                        callback = self.request_callbacks.pop(request.request_id, None)
+                    
+                    if callback:
+                        try:
+                            callback(request, result_text)
+                        except Exception as e:
+                            logger.error(f"Error in callback for {request.request_id}: {e}")
+                            
+                except Exception as e:
+                    if not self.is_running:
+                        break
+                    logger.error(f"Error processing request {request.request_id}: {e}")
+                    request.error = str(e)
+                    request.completion_time = time.time()
+                    
+                    # Trigger callback with error
+                    with self._lock:
+                        callback = self.request_callbacks.pop(request.request_id, None)
+                    
+                    if callback:
+                        try:
+                            callback(request, None)
+                        except Exception as e:
+                            logger.error(f"Error in error callback: {e}")
         
-        logger.info(f"Worker {worker_id} stopped")
+        logger.info("Unified worker loop stopped")
 
     def _process_request(self, request: Request) -> str:
         """
