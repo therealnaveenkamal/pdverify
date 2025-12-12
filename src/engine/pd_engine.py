@@ -2,7 +2,11 @@
 PD (Prefill-Decode) disaggregation engine.
 Two lanes: Prefill (low priority) and Decode (high priority).
 Standard speculative decoding happens in the decode lane (draft + verify together).
-NOW SUPPORTS BATCHING in the decode lane!
+
+OPTIMIZED: Now uses a SINGLE UNIFIED THREAD with 2 CUDA streams.
+           This eliminates lock contention issues at high concurrency.
+           - Stream 0: Prefill
+           - Stream 1: Decode (draft + verify)
 """
 
 import time
@@ -30,8 +34,10 @@ class PDEngine:
     PD (Prefill-Decode) disaggregation engine.
     Separates prefill from decode.
     
-    IMPROVED: Now supports BATCHED processing in the decode lane.
-             (Draft generation + Verification done for a batch of requests)
+    OPTIMIZED: Uses a SINGLE UNIFIED THREAD to dispatch work to 2 CUDA streams.
+               This avoids the lock contention that killed throughput at high concurrency.
+               - Stream 0: Prefill operations
+               - Stream 1: Decode operations (draft + verify together)
     """
 
     def __init__(self, config: VerifyPDConfig):
@@ -47,7 +53,7 @@ class PDEngine:
         from ..utils.stream_manager import StreamManager
         self.stream_manager = StreamManager(
             device=config.hardware.device,
-            num_streams=2  # One for prefill, one for decode
+            num_streams=2  # Stream 0: prefill, Stream 1: decode
         )
         
         self.model_runner = ModelRunner(
@@ -61,16 +67,14 @@ class PDEngine:
         
         # Engine state
         self.is_running = False
-        self.prefill_worker_thread = None
-        self.decode_worker_thread = None
+        self.worker_thread = None  # Single unified worker thread
         
         # Request queues (simple 2-lane system)
         from collections import deque
         self.prefill_queue: deque = deque()
         self.decode_queue: deque = deque()
         self.request_callbacks: Dict[str, Callable] = {}
-        self._lock = threading.Lock()
-        self._queue_condition = threading.Condition(self._lock)
+        self._lock = threading.Lock()  # Simple lock, no condition variable needed
         
         # Metrics
         self.total_tokens_generated = 0
@@ -80,16 +84,11 @@ class PDEngine:
         self.max_new_tokens = config.model.max_new_tokens
         self.batch_size = config.scheduler.batch_size
         
-        # Concurrency control
-        self.num_active_decode_requests = 0
-        self._prefill_thread = None
-        self._decode_thread = None
-        
-        logger.info(f"PDEngine initialized with 2-lane architecture and batch size {self.batch_size}")
+        logger.info(f"PDEngine initialized with UNIFIED THREAD, 2 streams, batch size {self.batch_size}")
     
     def start(self):
-        """Start the engine and worker threads."""
-        logger.info("Starting PDEngine...")
+        """Start the engine and unified worker thread."""
+        logger.info("Starting PDEngine (unified thread)...")
         self.model_runner.load_models()
         
         # Verify models loaded
@@ -99,28 +98,20 @@ class PDEngine:
             
         self.is_running = True
         
-        # Start separate worker threads for prefill and decode
-        self.prefill_worker_thread = threading.Thread(target=self._prefill_worker_loop, daemon=True)
-        self.decode_worker_thread = threading.Thread(target=self._decode_worker_loop, daemon=True)
+        # Start single unified worker thread
+        self.worker_thread = threading.Thread(target=self._unified_worker_loop, daemon=True)
+        self.worker_thread.start()
         
-        self.prefill_worker_thread.start()
-        self.decode_worker_thread.start()
-        
-        logger.info("PDEngine started with parallel prefill and decode workers")
+        logger.info("PDEngine started with unified thread dispatching to 2 streams")
 
     def stop(self):
-        """Stop the engine and worker threads."""
+        """Stop the engine and worker thread."""
         logger.info("Stopping PDEngine...")
         self.is_running = False
         
-        # Wake up both workers
-        with self._queue_condition:
-            self._queue_condition.notify_all()
-        
-        if self._prefill_thread:
-            self._prefill_thread.join(timeout=2.0)
-        if self._decode_thread:
-            self._decode_thread.join(timeout=2.0)
+        # Wait for worker to finish
+        if self.worker_thread:
+            self.worker_thread.join(timeout=2.0)
         
         self.stream_manager.cleanup()
         self.model_runner.cleanup()
@@ -148,101 +139,83 @@ class PDEngine:
         request.generated_tokens = []
         request._pd_stage = TwoLaneType.PREFILL  # Track which lane we're in
         
-        # Add to prefill queue
-        with self._queue_condition:
+        # Add to prefill queue (simple lock, no condition variable)
+        with self._lock:
             self.prefill_queue.append(request)
-            self._queue_condition.notify()
         
         logger.debug(f"Queued request {request.request_id} to prefill lane")
 
 
-    def _prefill_worker_loop(self):
-        """Worker loop for prefill lane."""
-        logger.info("Prefill worker loop started")
+    def _unified_worker_loop(self):
+        """
+        Unified worker loop handling both prefill and decode.
+        
+        This eliminates the lock contention between separate threads by using
+        a single thread that dispatches work to 2 CUDA streams:
+        - Stream 0: Prefill
+        - Stream 1: Decode (draft + verify)
+        """
+        logger.info("Unified worker loop started (1 thread, 2 streams)")
+        
         while self.is_running:
-            request = None
-            with self._queue_condition:
-                while self.is_running and len(self.prefill_queue) == 0:
-                    self._queue_condition.wait(timeout=0.1)
-                
-                if not self.is_running:
-                    break
-                
-                # Wait for capacity in decode lane (Backpressure)
-                while self.is_running and self.num_active_decode_requests >= self.batch_size:
-                    self._queue_condition.wait(timeout=0.1)
-                    
-                if not self.is_running:
-                    break
-                    
-                if len(self.prefill_queue) > 0 and self.num_active_decode_requests < self.batch_size:
-                    request = self.prefill_queue.popleft()
-                    # Increment active count BEFORE processing to reserve slot
-                    self.num_active_decode_requests += 1
+            # Check queue depths (quick lock)
+            with self._lock:
+                decode_queue_len = len(self.decode_queue)
+                prefill_queue_len = len(self.prefill_queue)
             
-
-            if request:
-                try:
-                    self._handle_prefill(request)
-                except Exception as e:
-                    logger.error(f"Error in prefill worker: {e}", exc_info=True)
-                    request.error = str(e)
-                    self._complete_request(request) # This will decrement the count
-
-        logger.info("Prefill worker loop stopped")
-
-    def _decode_worker_loop(self):
-        """Worker loop for decode lane (supports batching)."""
-        logger.info("Decode worker loop started")
-        while self.is_running:
+            # Backpressure: only prefill if decode queue has capacity
+            if decode_queue_len < int(self.batch_size * 1.2) and prefill_queue_len > 0:
+                # Get a prefill request
+                prefill_req = None
+                with self._lock:
+                    if len(self.prefill_queue) > 0:
+                        prefill_req = self.prefill_queue.popleft()
+                
+                if prefill_req:
+                    try:
+                        self._handle_prefill(prefill_req)
+                    except Exception as e:
+                        logger.error(f"Error in prefill: {e}", exc_info=True)
+                        prefill_req.error = str(e)
+                        self._complete_request(prefill_req)
+            
+            # Process decode batch
             batch = []
-            with self._queue_condition:
-                while self.is_running and len(self.decode_queue) == 0:
-                    self._queue_condition.wait(timeout=0.1)
-                
-                if not self.is_running:
-                    break
-                
-                # Form a batch up to batch_size
+            with self._lock:
                 while len(self.decode_queue) > 0 and len(batch) < self.batch_size:
                     batch.append(self.decode_queue.popleft())
             
             if batch:
-                # print(f"DEBUG: Processing decode batch of size {len(batch)}")
                 try:
                     self._handle_decode_batch(batch)
                 except Exception as e:
-                    # If we are shutting down, suppress likely resource errors
                     if not self.is_running:
                         logger.debug(f"Suppressing error during shutdown: {e}")
                         break
                     
-                    logger.error(f"Error in decode worker: {e}", exc_info=True)
-                    print(f"DEBUG: Error in decode batch: {e}")
+                    logger.error(f"Error in decode batch: {e}", exc_info=True)
                     for req in batch:
                         req.error = str(e)
                         self._complete_request(req)
-
-        logger.info("Decode worker loop stopped")
-
-    def _trigger_callback(self, request: Request, result_text: str):
-        """Trigger completion callback."""
-        with self._lock:
-            callback = self.request_callbacks.pop(request.request_id, None)
+            
+            # If both queues are empty, sleep briefly (10 microseconds)
+            elif decode_queue_len == 0 and prefill_queue_len == 0:
+                time.sleep(0.00001)
         
-        if callback:
-            try:
-                callback(request, result_text)
-            except Exception as e:
-                logger.error(f"Error in callback: {e}")
+        logger.info("Unified worker loop stopped")
+
+    def _trigger_callback(self, callback: Callable, request: Request, result_text: str):
+        """Trigger completion callback (called from separate thread)."""
+        try:
+            callback(request, result_text)
+        except Exception as e:
+            logger.error(f"Error in callback for {request.request_id}: {e}")
 
     def _handle_prefill(self, request: Request):
-        """Handle prefill stage."""
-        # Use CUDA stream 0 for prefill
-        stream = self.stream_manager.get_stream(0)
-        
+        """Handle prefill stage on stream 0."""
         request.prefill_start_time = time.time()
-        # Prefill now returns KV caches and logits
+        
+        # Prefill returns KV caches and logits (uses stream 0)
         input_ids, draft_kv, verifier_kv, verifier_logits, draft_logits = self.model_runner.prefill(
             request.prompt,
             stream_id=0
@@ -256,12 +229,11 @@ class PDEngine:
         request.last_verifier_logits = verifier_logits
         request.last_draft_logits = draft_logits
         
-        # Transition to decode lane
+        # Transition to decode lane (simple lock, no condition variable)
         request._pd_stage = TwoLaneType.DECODE
         
-        with self._queue_condition:
+        with self._lock:
             self.decode_queue.append(request)
-            self._queue_condition.notify()
             
         logger.debug(f"Prefill complete for {request.request_id}. KV cache initialized.")
 
@@ -431,16 +403,14 @@ class PDEngine:
                 elif len(req.generated_tokens) >= self.max_new_tokens:
                     self._complete_request(req)
                 else:
-                    # Requeue
-                    with self._queue_condition:
+                    # Requeue (simple lock, no condition variable)
+                    with self._lock:
                         self.decode_queue.append(req)
-                        self._queue_condition.notify()
             else:
                 # Should not happen in greedy decoding (always accept at least 1 correction)
                 # But if it does, just requeue
-                 with self._queue_condition:
-                        self.decode_queue.append(req)
-                        self._queue_condition.notify()
+                with self._lock:
+                    self.decode_queue.append(req)
 
         # Update controller
         # self.controller.record_acceptance(...) 
@@ -458,16 +428,14 @@ class PDEngine:
                 pass
         
         # Callback
-        if self.request_callbacks.get(request.request_id):
-            import threading
-            threading.Thread(target=self._trigger_callback, args=(request, result_text)).start()
-
-        # Update active count and notify
-        with self._queue_condition:
-            self.num_active_decode_requests -= 1
-            self._queue_condition.notify_all()
+        with self._lock:
+            callback = self.request_callbacks.pop(request.request_id, None)
+        
+        if callback:
+            # Run callback in separate thread to avoid blocking
+            threading.Thread(target=self._trigger_callback, args=(callback, request, result_text)).start()
             
-        logger.debug(f"Request {request.request_id} completed. Active: {self.num_active_decode_requests}")
+        logger.debug(f"Request {request.request_id} completed")
         
         # Clean up large tensors
         try:

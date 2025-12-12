@@ -28,20 +28,25 @@ def load_results(results_dir):
 
 def plot_throughput_comparison(results, output_dir):
     """Plot throughput comparison across configurations."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n_configs = len(results)
+    fig, axes = plt.subplots(1, max(n_configs, 1), figsize=(6 * max(n_configs, 1), 5))
+    if n_configs == 1:
+        axes = [axes]
+    
+    # Colors for 3 engines
+    colors = {'Baseline': '#2ca02c', 'PD': '#1f77b4', 'PDV': '#ff7f0e'}
+    markers = {'Baseline': '^', 'PD': 'o', 'PDV': 's'}
     
     for idx, (config_name, df) in enumerate(results.items()):
-        ax = axes[idx]
+        ax = axes[idx] if n_configs > 1 else axes[0]
         
-        # Separate PD and PDV data
-        pd_data = df[df['Engine'] == 'PD']
-        pdv_data = df[df['Engine'] == 'PDV']
-        
-        # Plot
-        ax.plot(pd_data['Concurrency'], pd_data['Throughput (TPS)'], 
-                marker='o', linewidth=2, markersize=8, label='PD', color='#1f77b4')
-        ax.plot(pdv_data['Concurrency'], pdv_data['Throughput (TPS)'], 
-                marker='s', linewidth=2, markersize=8, label='PDV', color='#ff7f0e')
+        # Plot each engine
+        for engine_name in ['Baseline', 'PD', 'PDV']:
+            engine_data = df[df['Engine'] == engine_name]
+            if not engine_data.empty:
+                ax.plot(engine_data['Concurrency'], engine_data['Throughput (TPS)'], 
+                        marker=markers.get(engine_name, 'o'), linewidth=2, markersize=8, 
+                        label=engine_name, color=colors.get(engine_name, '#333333'))
         
         ax.set_xlabel('Concurrency Level', fontsize=11, fontweight='bold')
         ax.set_ylabel('Throughput (TPS)', fontsize=11, fontweight='bold')
@@ -58,18 +63,25 @@ def plot_throughput_comparison(results, output_dir):
 
 def plot_latency_comparison(results, output_dir):
     """Plot latency comparison across configurations."""
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    n_configs = len(results)
+    fig, axes = plt.subplots(2, max(n_configs, 1), figsize=(6 * max(n_configs, 1), 10))
+    if n_configs == 1:
+        axes = axes.reshape(2, 1)
+    
+    # Colors for 3 engines
+    colors = {'Baseline': '#2ca02c', 'PD': '#1f77b4', 'PDV': '#ff7f0e'}
+    markers = {'Baseline': '^', 'PD': 'o', 'PDV': 's'}
     
     for idx, (config_name, df) in enumerate(results.items()):
         # Average latency
-        ax_avg = axes[0, idx]
-        pd_data = df[df['Engine'] == 'PD']
-        pdv_data = df[df['Engine'] == 'PDV']
+        ax_avg = axes[0, idx] if n_configs > 1 else axes[0, 0]
         
-        ax_avg.plot(pd_data['Concurrency'], pd_data['Avg Request Latency (ms)'], 
-                   marker='o', linewidth=2, markersize=8, label='PD', color='#1f77b4')
-        ax_avg.plot(pdv_data['Concurrency'], pdv_data['Avg Request Latency (ms)'], 
-                   marker='s', linewidth=2, markersize=8, label='PDV', color='#ff7f0e')
+        for engine_name in ['Baseline', 'PD', 'PDV']:
+            engine_data = df[df['Engine'] == engine_name]
+            if not engine_data.empty:
+                ax_avg.plot(engine_data['Concurrency'], engine_data['Avg Request Latency (ms)'], 
+                           marker=markers.get(engine_name, 'o'), linewidth=2, markersize=8, 
+                           label=engine_name, color=colors.get(engine_name, '#333333'))
         
         ax_avg.set_xlabel('Concurrency Level', fontsize=11, fontweight='bold')
         ax_avg.set_ylabel('Avg Latency (ms)', fontsize=11, fontweight='bold')
@@ -80,11 +92,14 @@ def plot_latency_comparison(results, output_dir):
         ax_avg.set_yscale('log')
         
         # P99 latency
-        ax_p99 = axes[1, idx]
-        ax_p99.plot(pd_data['Concurrency'], pd_data['Latency P99 (ms)'], 
-                   marker='o', linewidth=2, markersize=8, label='PD', color='#1f77b4')
-        ax_p99.plot(pdv_data['Concurrency'], pdv_data['Latency P99 (ms)'], 
-                   marker='s', linewidth=2, markersize=8, label='PDV', color='#ff7f0e')
+        ax_p99 = axes[1, idx] if n_configs > 1 else axes[1, 0]
+        
+        for engine_name in ['Baseline', 'PD', 'PDV']:
+            engine_data = df[df['Engine'] == engine_name]
+            if not engine_data.empty:
+                ax_p99.plot(engine_data['Concurrency'], engine_data['Latency P99 (ms)'], 
+                           marker=markers.get(engine_name, 'o'), linewidth=2, markersize=8, 
+                           label=engine_name, color=colors.get(engine_name, '#333333'))
         
         ax_p99.set_xlabel('Concurrency Level', fontsize=11, fontweight='bold')
         ax_p99.set_ylabel('P99 Latency (ms)', fontsize=11, fontweight='bold')
@@ -102,18 +117,24 @@ def plot_latency_comparison(results, output_dir):
 
 def plot_gpu_utilization(results, output_dir):
     """Plot GPU utilization comparison."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n_configs = len(results)
+    fig, axes = plt.subplots(1, max(n_configs, 1), figsize=(6 * max(n_configs, 1), 5))
+    if n_configs == 1:
+        axes = [axes]
+    
+    # Colors for 3 engines
+    colors = {'Baseline': '#2ca02c', 'PD': '#1f77b4', 'PDV': '#ff7f0e'}
+    markers = {'Baseline': '^', 'PD': 'o', 'PDV': 's'}
     
     for idx, (config_name, df) in enumerate(results.items()):
-        ax = axes[idx]
+        ax = axes[idx] if n_configs > 1 else axes[0]
         
-        pd_data = df[df['Engine'] == 'PD']
-        pdv_data = df[df['Engine'] == 'PDV']
-        
-        ax.plot(pd_data['Concurrency'], pd_data['GPU Util %'], 
-                marker='o', linewidth=2, markersize=8, label='PD', color='#1f77b4')
-        ax.plot(pdv_data['Concurrency'], pdv_data['GPU Util %'], 
-                marker='s', linewidth=2, markersize=8, label='PDV', color='#ff7f0e')
+        for engine_name in ['Baseline', 'PD', 'PDV']:
+            engine_data = df[df['Engine'] == engine_name]
+            if not engine_data.empty:
+                ax.plot(engine_data['Concurrency'], engine_data['GPU Util %'], 
+                        marker=markers.get(engine_name, 'o'), linewidth=2, markersize=8, 
+                        label=engine_name, color=colors.get(engine_name, '#333333'))
         
         ax.set_xlabel('Concurrency Level', fontsize=11, fontweight='bold')
         ax.set_ylabel('GPU Utilization (%)', fontsize=11, fontweight='bold')
@@ -131,22 +152,26 @@ def plot_gpu_utilization(results, output_dir):
 
 def plot_acceptance_rate(results, output_dir):
     """Plot acceptance rate comparison."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    n_configs = len(results)
+    fig, axes = plt.subplots(1, max(n_configs, 1), figsize=(6 * max(n_configs, 1), 5))
+    if n_configs == 1:
+        axes = [axes]
+    
+    # Colors for 3 engines
+    colors = {'Baseline': '#2ca02c', 'PD': '#1f77b4', 'PDV': '#ff7f0e'}
+    markers = {'Baseline': '^', 'PD': 'o', 'PDV': 's'}
     
     for idx, (config_name, df) in enumerate(results.items()):
-        ax = axes[idx]
+        ax = axes[idx] if n_configs > 1 else axes[0]
         
-        pd_data = df[df['Engine'] == 'PD']
-        pdv_data = df[df['Engine'] == 'PDV']
-        
-        # Convert percentage strings to float
-        pd_accept = pd_data['Acceptance Rate'].str.rstrip('%').astype(float)
-        pdv_accept = pdv_data['Acceptance Rate'].str.rstrip('%').astype(float)
-        
-        ax.plot(pd_data['Concurrency'], pd_accept, 
-                marker='o', linewidth=2, markersize=8, label='PD', color='#1f77b4')
-        ax.plot(pdv_data['Concurrency'], pdv_accept, 
-                marker='s', linewidth=2, markersize=8, label='PDV', color='#ff7f0e')
+        for engine_name in ['Baseline', 'PD', 'PDV']:
+            engine_data = df[df['Engine'] == engine_name]
+            if not engine_data.empty:
+                # Convert percentage strings to float
+                accept_rate = engine_data['Acceptance Rate'].str.rstrip('%').astype(float)
+                ax.plot(engine_data['Concurrency'], accept_rate, 
+                        marker=markers.get(engine_name, 'o'), linewidth=2, markersize=8, 
+                        label=engine_name, color=colors.get(engine_name, '#333333'))
         
         ax.set_xlabel('Concurrency Level', fontsize=11, fontweight='bold')
         ax.set_ylabel('Acceptance Rate (%)', fontsize=11, fontweight='bold')
@@ -231,8 +256,11 @@ def generate_summary_table(results, output_dir):
     summary_data = []
     
     for config_name, df in results.items():
-        for engine in ['PD', 'PDV']:
+        for engine in ['Baseline', 'PD', 'PDV']:
             engine_df = df[df['Engine'] == engine]
+            
+            if engine_df.empty:
+                continue
             
             summary_data.append({
                 'Configuration': config_name,

@@ -101,9 +101,9 @@ def run_concurrency_benchmark(
     if prompts is None:
         prompts = get_sharegpt_prompts(100)
     
-    # Engines to test
+    # Engines to test (all 3 for fair comparison)
     engines = {
-        # "Baseline": BaselineEngine,
+        "Baseline": BaselineEngine,
         "PD": PDEngine,
         "PDV": PDVLiteEngine
     }
