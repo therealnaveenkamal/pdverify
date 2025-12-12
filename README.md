@@ -4,7 +4,17 @@
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-orange.svg)](https://pytorch.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-required-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 
-PD-Verify is an optimized speculative decoding engine that achieves **up to 753% higher throughput** than traditional 2-lane architectures at high concurrency through unified worker design and intelligent parallelization.
+PD-Verify is an optimized speculative decoding engine that achieves **up to 3265% higher throughput (33x speedup)** than traditional 2-lane architectures at ultra-high concurrency through unified worker design and intelligent parallelization.
+
+---
+
+## Visual Performance Summary
+
+### Throughput Scaling: PDV vs PD
+
+![Throughput Comparison](plots/throughput_comparison.png)
+
+**At a glance:** PDV dramatically outperforms PD at high concurrency, with exponential gains starting at C=32 and reaching 33x improvement at C=128.
 
 ---
 
@@ -60,20 +70,31 @@ PD-Verify is an optimized speculative decoding engine that achieves **up to 753%
 ### Architecture Comparison
 
 #### Baseline: Single-Lane Sequential
+
+![Baseline Architecture](assets/baseline.png)
+
 - Sequential processing: prefill → decode → verify (repeat)
 - Multiple workers compete for same GPU resources
 - GPU Utilization: ~50%
 
 #### PD: 2-Lane Prefill-Decode
+
+![PD Architecture](assets/PD-spec.png)
+
 - Two lanes: Prefill (low priority) and Decode (high priority)
 - Verify runs atomically inside decode lane
 - GPU Utilization: ~67%
 
 #### PDV: Unified Worker with Stream Parallelization
+
+![PDV Architecture](assets/PDV-spec.png)
+
 - Single unified worker eliminates handoff overhead
 - Parallel CUDA streams for independent operations
 - Aggressive prefill-decode interleaving
 - GPU Utilization: ~70% (optimized for latency vs raw utilization)
+
+**Performance at C=128:** PDV delivers **33x higher throughput** than PD
 
 ---
 
@@ -141,27 +162,53 @@ PD-Verify is an optimized speculative decoding engine that achieves **up to 753%
 
 ### Visualizations
 
-All performance graphs are available in the `/plots` directory:
+#### Throughput Comparison: PDV's Dominance at High Concurrency
 
-1. **Throughput Comparison** (`throughput_comparison.png`)
-   - Shows PDV's advantage at high concurrency
-   - Dramatic improvements at C >= 32
+![Throughput Comparison](plots/throughput_comparison.png)
 
-2. **Latency Comparison** (`latency_comparison.png`)
-   - Average and P99 latency across concurrency levels
-   - PDV maintains lower tail latency at high load
+**Key Insights:**
+- PDV throughput scales dramatically better than PD at C >= 64
+- Up to 33x throughput improvement at C=128
+- All three model configurations benefit from PDV's architecture
 
-3. **GPU Utilization** (`gpu_utilization.png`)
-   - Comparable GPU efficiency between PD and PDV
-   - PDV optimized for latency over raw utilization
+#### Latency Analysis: Average and P99 Performance
 
-4. **Token Acceptance Rate** (`acceptance_rate.png`)
-   - Similar acceptance rates across architectures
-   - Confirms performance gains are architectural, not algorithmic
+![Latency Comparison](plots/latency_comparison.png)
 
-5. **Improvement Heatmap** (`improvement_heatmap.png`)
-   - Visual representation of PDV gains/losses by configuration and concurrency
-   - Clear identification of success and failure modes
+**Key Insights:**
+- PDV maintains competitive latency while delivering massive throughput gains
+- 20-43% latency reduction at ultra-high concurrency
+- P99 latency remains stable even under extreme load
+
+#### GPU Utilization: Efficient Resource Usage
+
+![GPU Utilization](plots/gpu_utilization.png)
+
+**Key Insights:**
+- Similar GPU utilization between PD and PDV (45-75%)
+- PDV optimized for throughput and latency, not raw GPU saturation
+- Consistent resource efficiency across concurrency levels
+
+#### Performance Improvement Heatmap
+
+![Improvement Heatmap](plots/improvement_heatmap.png)
+
+**Key Insights:**
+- Clear visualization of success (green) and failure (red) modes
+- Ultra-high concurrency (C >= 64): Extreme green (1000-3200% gains)
+- Medium concurrency (C = 6-16): Red zones where PD performs better
+- Provides at-a-glance deployment guidance
+
+#### Token Acceptance Rate
+
+![Acceptance Rate](plots/acceptance_rate.png)
+
+**Key Insights:**
+- Similar acceptance rates across PD and PDV (~40-42%)
+- Performance differences are architectural, not algorithmic
+- Validates that gains come from parallel processing, not speculation quality
+
+All plots available in `/plots` directory.
 
 ---
 
@@ -353,14 +400,12 @@ pdverify/
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/pdverify
+git clone https://github.com/therealnaveenkamal/pdverify
 cd pdverify
 
 # Install dependencies
 pip install torch transformers accelerate pandas matplotlib seaborn
 
-# Set up HuggingFace token (for gated models)
-export HF_TOKEN="your_token_here"
 ```
 
 ### Running Benchmarks
@@ -461,15 +506,9 @@ If you use PDV in your research, please cite:
 @software{pdverify2024,
   title = {PD-Verify: High-Performance Disaggregated Speculative Decoding},
   year = {2024},
-  url = {https://github.com/yourusername/pdverify}
+  url = {https://github.com/therealnaveenkamal/pdverify}
 }
 ```
-
----
-
-## License
-
-MIT License - see LICENSE file for details.
 
 ---
 
