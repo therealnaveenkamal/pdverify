@@ -6,6 +6,10 @@ Uses TinyLlama-1.1B as draft model and Llama-2-7B as verifier.
 Run this script to generate comparison graphs.
 """
 
+import os
+# Suppress tokenizer parallelism warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 import logging
 import copy
@@ -42,9 +46,9 @@ def run_benchmark():
     prompts = get_sharegpt_prompts(100)
     
     # Duration per test (seconds)
-    duration_seconds = 15
+    duration_seconds = 20
     
-    # Engines to test
+    # Engines to test (order matters - run Baseline first so it doesn't benefit from warm GPU)
     engines = {
         "Baseline": BaselineEngine,
         "PD": PDEngine,
@@ -68,7 +72,11 @@ def run_benchmark():
             
             # Update config
             current_config = copy.deepcopy(config)
-            current_config.scheduler.batch_size = concurrency
+            # For Baseline, cap workers at 16 to avoid thread explosion
+            if engine_name == "Baseline":
+                current_config.scheduler.batch_size = min(concurrency, 16)
+            else:
+                current_config.scheduler.batch_size = concurrency
             current_config.scheduler.max_queue_size = concurrency * 50
             
             # Initialize Engine
@@ -80,7 +88,8 @@ def run_benchmark():
                 gpu_monitor.start()
                 
                 # Generate requests with Poisson arrivals
-                arrival_rate = max(0.5, concurrency * 0.1)
+                # Higher arrival rate to better saturate the system
+                arrival_rate = max(1.0, concurrency * 0.5)
                 
                 benchmark = PoissonBenchmark(
                     prompts=prompts,
@@ -128,9 +137,13 @@ def run_benchmark():
                 gpu_monitor.stop()
                 engine.stop()
                 
-                # Clear GPU memory
+                # Clear GPU memory and wait for cleanup
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                
+                # Small delay between tests to ensure clean state
+                time.sleep(2)
     
     # Save results
     results_dir = Path("benchmark_results")

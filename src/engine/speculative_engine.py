@@ -559,8 +559,14 @@ class PDVLiteEngine:
         logger.info("Stopping PDVLiteEngine...")
         self.is_running = False
         
+        # Wait for worker to finish current batch
         if self.worker_thread:
-            self.worker_thread.join(timeout=2.0)
+            self.worker_thread.join(timeout=5.0)
+        
+        # Clear any remaining requests
+        with self._lock:
+            self.prefill_queue.clear()
+            self.decode_queue.clear()
         
         self.stream_manager.cleanup()
         self.model_runner.cleanup()
@@ -610,9 +616,20 @@ class PDVLiteEngine:
                     batch.append(self.decode_queue.popleft())
             
             if batch:
+                # Check if engine is still running before processing
+                if not self.is_running:
+                    # Re-queue requests if shutting down
+                    with self._lock:
+                        for req in batch:
+                            self.decode_queue.append(req)
+                    break
+                    
                 try:
                     self._handle_decode_batch_aggressive(batch)
                 except Exception as e:
+                    # Suppress errors during shutdown
+                    if not self.is_running:
+                        break
                     logger.error(f"Error in decode batch: {e}", exc_info=True)
                     for req in batch:
                         req.error = str(e)
