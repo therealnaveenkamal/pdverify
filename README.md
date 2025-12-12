@@ -87,7 +87,7 @@ PD-Verify is an optimized speculative decoding engine that achieves **up to 3265
 
 #### PDV: Unified Worker with Stream Parallelization
 
-![PDV Architecture](assets/PDV-spec.png)
+![PDV Architecture](assets/fpdv.png)
 
 - Single unified worker eliminates handoff overhead
 - Parallel CUDA streams for independent operations
