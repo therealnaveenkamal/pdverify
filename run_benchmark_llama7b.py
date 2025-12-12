@@ -42,8 +42,10 @@ def run_benchmark():
     # Concurrency levels to test
     concurrency_levels = [1, 4, 32, 128]
     
-    # Prompts
-    prompts = get_sharegpt_prompts(100)
+    # Prompts - Load real ShareGPT data from HuggingFace
+    print("Loading prompts from ShareGPT dataset...")
+    prompts = get_sharegpt_prompts(200, use_real_data=True)  # Get 200 for variety
+    print(f"Loaded {len(prompts)} prompts")
     
     # Duration per test (seconds)
     duration_seconds = 20

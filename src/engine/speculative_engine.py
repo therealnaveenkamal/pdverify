@@ -589,36 +589,68 @@ class PDVLiteEngine:
             self.prefill_queue.append(request)
 
     def _unified_worker_loop(self):
-        logger.info("Unified worker loop started")
+        """
+        Pipelined worker loop with TRUE OVERLAP using 3 CUDA streams:
+        - Stream 0: Draft generation
+        - Stream 1: Verification  
+        - Stream 2: Prefill
+        
+        While decode batch runs on streams 0/1, prefill runs on stream 2!
+        """
+        logger.info("Pipelined worker loop started (3 streams, TRUE OVERLAP)")
         import time
+        
+        # Track in-flight prefill
+        prefill_in_flight = None
+        prefill_event = None
+        
         while self.is_running:
-            with self._lock:
-                decode_queue_len = len(self.decode_queue)
-                prefill_queue_len = len(self.prefill_queue)
+            # === PHASE 1: Check if prefill completed ===
+            if prefill_in_flight is not None and prefill_event is not None:
+                if prefill_event.query():  # Non-blocking check
+                    with self._lock:
+                        self.decode_queue.append(prefill_in_flight)
+                    prefill_in_flight = None
+                    prefill_event = None
             
-            if decode_queue_len < self.batch_size:
-                prefill_req = None
+            # === PHASE 2: Start new prefill on stream 2 ===
+            if prefill_in_flight is None:
                 with self._lock:
-                    if prefill_queue_len > 0:
-                        prefill_req = self.prefill_queue.popleft()
-
-                if prefill_req:
-                    try:
-                        self._handle_prefill(prefill_req)
-                    except Exception as e:
-                        logger.error(f"Error in prefill: {e}", exc_info=True)
-                        prefill_req.error = str(e)
-                        self._complete_request(prefill_req)
+                    decode_queue_len = len(self.decode_queue)
+                    prefill_queue_len = len(self.prefill_queue)
+                
+                if prefill_queue_len > 0 and decode_queue_len < int(self.batch_size * 1.5):
+                    with self._lock:
+                        if len(self.prefill_queue) > 0:
+                            prefill_in_flight = self.prefill_queue.popleft()
+                    
+                    if prefill_in_flight:
+                        try:
+                            self._handle_prefill_async(prefill_in_flight)
+                            stream = self.stream_manager.get_stream(2)
+                            if stream:
+                                prefill_event = torch.cuda.Event()
+                                prefill_event.record(stream)
+                            else:
+                                with self._lock:
+                                    self.decode_queue.append(prefill_in_flight)
+                                prefill_in_flight = None
+                        except Exception as e:
+                            logger.error(f"Error in prefill: {e}", exc_info=True)
+                            prefill_in_flight.error = str(e)
+                            self._complete_request(prefill_in_flight)
+                            prefill_in_flight = None
+                            prefill_event = None
             
+            # === PHASE 3: Process decode batch on streams 0/1 ===
+            # This runs IN PARALLEL with prefill on stream 2!
             batch = []
             with self._lock:
                 while len(self.decode_queue) > 0 and len(batch) < self.batch_size:
                     batch.append(self.decode_queue.popleft())
             
             if batch:
-                # Check if engine is still running before processing
                 if not self.is_running:
-                    # Re-queue requests if shutting down
                     with self._lock:
                         for req in batch:
                             self.decode_queue.append(req)
@@ -627,20 +659,36 @@ class PDVLiteEngine:
                 try:
                     self._handle_decode_batch_aggressive(batch)
                 except Exception as e:
-                    # Suppress errors during shutdown
                     if not self.is_running:
                         break
                     logger.error(f"Error in decode batch: {e}", exc_info=True)
                     for req in batch:
                         req.error = str(e)
                         self._complete_request(req)
-            elif decode_queue_len == 0 and prefill_queue_len == 0:
+            
+            # === PHASE 4: Sleep only if truly idle ===
+            with self._lock:
+                decode_queue_len = len(self.decode_queue)
+                prefill_queue_len = len(self.prefill_queue)
+            
+            if decode_queue_len == 0 and prefill_queue_len == 0 and prefill_in_flight is None:
                 time.sleep(0.00001)
-
-        logger.info("Unified worker loop stopped")
+        
+        if prefill_event is not None:
+            prefill_event.synchronize()
+        
+        logger.info("Pipelined worker loop stopped")
 
     def _handle_prefill(self, request: Request):
-        """Handle prefill."""
+        """Handle prefill (synchronous version)."""
+        self._handle_prefill_async(request)
+        stream = self.stream_manager.get_stream(2)
+        if stream:
+            stream.synchronize()
+        logger.debug(f"Prefill complete for {request.request_id}")
+    
+    def _handle_prefill_async(self, request: Request):
+        """Handle prefill on stream 2 (async - doesn't wait)."""
         request.prefill_start_time = time.time()
         input_ids, draft_kv, verifier_kv, verifier_logits, draft_logits = self.model_runner.prefill(
             request.prompt,
@@ -653,9 +701,6 @@ class PDVLiteEngine:
         request.kv_cache_verifier = verifier_kv
         request.last_verifier_logits = verifier_logits
         request.last_draft_logits = draft_logits
-        
-        with self._lock:
-            self.decode_queue.append(request)
 
     def _handle_decode_batch_aggressive(self, batch: List[Request]):
         import torch

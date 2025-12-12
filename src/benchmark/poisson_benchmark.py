@@ -323,18 +323,54 @@ def load_question_jsonl(path: str) -> List[str]:
     return prompts
 
 
-def get_sharegpt_prompts(num_samples: int = 100) -> List[str]:
+def get_sharegpt_prompts(num_samples: int = 100, use_real_data: bool = True) -> List[str]:
     """
-    Get sample prompts (placeholder for ShareGPT dataset).
-    In production, this would load from actual ShareGPT dataset.
+    Get prompts from ShareGPT dataset via Hugging Face.
+    Falls back to sample prompts if dataset loading fails.
     
     Args:
         num_samples: Number of prompts to return
+        use_real_data: If True, try to load real ShareGPT data from HuggingFace
         
     Returns:
         List of prompts
     """
-    # Sample prompts for testing
+    if use_real_data:
+        try:
+            from datasets import load_dataset
+            logger.info("Loading ShareGPT prompts from Hugging Face...")
+            
+            # Load ShareGPT dataset (conversations)
+            dataset = load_dataset(
+                "anon8231489123/ShareGPT_Vicuna_unfiltered",
+                split="train",
+                streaming=True  # Stream to avoid downloading full dataset
+            )
+            
+            prompts = []
+            for i, item in enumerate(dataset):
+                if i >= num_samples:
+                    break
+                # Extract first human message from conversation
+                conversations = item.get("conversations", [])
+                for conv in conversations:
+                    if conv.get("from") == "human":
+                        prompt = conv.get("value", "")
+                        if prompt and len(prompt) > 10:  # Filter very short prompts
+                            prompts.append(prompt)
+                            break
+            
+            if len(prompts) >= num_samples // 2:
+                logger.info(f"Loaded {len(prompts)} prompts from ShareGPT")
+                random.shuffle(prompts)
+                return prompts[:num_samples]
+            else:
+                logger.warning(f"Only got {len(prompts)} prompts, falling back to samples")
+                
+        except Exception as e:
+            logger.warning(f"Failed to load ShareGPT dataset: {e}. Using sample prompts.")
+    
+    # Fallback: Sample prompts for testing
     sample_prompts = [
         "Explain quantum computing in simple terms.",
         "Write a short story about a robot.",
@@ -345,7 +381,12 @@ def get_sharegpt_prompts(num_samples: int = 100) -> List[str]:
         "Explain the theory of relativity.",
         "Write a poem about nature.",
         "What are the causes of climate change?",
-        "Describe how a car engine works."
+        "Describe how a car engine works.",
+        "What is the difference between machine learning and deep learning?",
+        "How do neural networks work?",
+        "Explain the concept of recursion in programming.",
+        "What are the benefits of cloud computing?",
+        "Describe the process of DNA replication.",
     ]
     
     # Repeat and shuffle to get desired number

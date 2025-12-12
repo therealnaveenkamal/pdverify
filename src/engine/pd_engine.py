@@ -153,47 +153,72 @@ class PDEngine:
 
     def _unified_worker_loop(self):
         """
-        Unified worker loop handling both prefill and decode.
+        Pipelined worker loop that OVERLAPS prefill and decode using CUDA streams.
         
-        This eliminates the lock contention between separate threads by using
-        a single thread that dispatches work to 2 CUDA streams:
+        Key insight: While decode is running on stream 1, we can prefill
+        the NEXT request on stream 0. This is true pipelining.
+        
         - Stream 0: Prefill
         - Stream 1: Decode (draft + verify)
         """
-        logger.info("Unified worker loop started (1 thread, 2 streams)")
+        logger.info("Pipelined worker loop started (1 thread, 2 streams, TRUE OVERLAP)")
+        
+        # Track in-flight operations
+        prefill_in_flight = None  # Request being prefilled
+        prefill_event = None      # CUDA event for prefill completion
         
         while self.is_running:
-            # Check queue depths (quick lock)
-            with self._lock:
-                decode_queue_len = len(self.decode_queue)
-                prefill_queue_len = len(self.prefill_queue)
+            # === PHASE 1: Check if prefill completed, move to decode queue ===
+            if prefill_in_flight is not None and prefill_event is not None:
+                if prefill_event.query():  # Non-blocking check
+                    # Prefill done, move to decode queue
+                    with self._lock:
+                        self.decode_queue.append(prefill_in_flight)
+                    prefill_in_flight = None
+                    prefill_event = None
             
-            # Backpressure: only prefill if decode queue has capacity
-            if decode_queue_len < int(self.batch_size * 1.2) and prefill_queue_len > 0:
-                # Get a prefill request
-                prefill_req = None
+            # === PHASE 2: Start new prefill if slot available ===
+            if prefill_in_flight is None:  # Prefill slot available
                 with self._lock:
-                    if len(self.prefill_queue) > 0:
-                        prefill_req = self.prefill_queue.popleft()
+                    decode_queue_len = len(self.decode_queue)
+                    prefill_queue_len = len(self.prefill_queue)
                 
-                if prefill_req:
-                    try:
-                        self._handle_prefill(prefill_req)
-                    except Exception as e:
-                        logger.error(f"Error in prefill: {e}", exc_info=True)
-                        prefill_req.error = str(e)
-                        self._complete_request(prefill_req)
+                # Start prefill if there's work and decode queue isn't too full
+                if prefill_queue_len > 0 and decode_queue_len < int(self.batch_size * 1.5):
+                    with self._lock:
+                        if len(self.prefill_queue) > 0:
+                            prefill_in_flight = self.prefill_queue.popleft()
+                    
+                    if prefill_in_flight:
+                        try:
+                            # Launch prefill ASYNC on stream 0
+                            self._handle_prefill_async(prefill_in_flight)
+                            # Record event for completion tracking
+                            stream = self.stream_manager.get_stream(0)
+                            if stream:
+                                prefill_event = torch.cuda.Event()
+                                prefill_event.record(stream)
+                            else:
+                                # CPU mode - prefill is synchronous
+                                with self._lock:
+                                    self.decode_queue.append(prefill_in_flight)
+                                prefill_in_flight = None
+                        except Exception as e:
+                            logger.error(f"Error in prefill: {e}", exc_info=True)
+                            prefill_in_flight.error = str(e)
+                            self._complete_request(prefill_in_flight)
+                            prefill_in_flight = None
+                            prefill_event = None
             
-            # Process decode batch
+            # === PHASE 3: Process decode batch (on stream 1) ===
+            # This runs IN PARALLEL with prefill on stream 0!
             batch = []
             with self._lock:
                 while len(self.decode_queue) > 0 and len(batch) < self.batch_size:
                     batch.append(self.decode_queue.popleft())
             
             if batch:
-                # Check if engine is still running before processing
                 if not self.is_running:
-                    # Re-queue requests if shutting down
                     with self._lock:
                         for req in batch:
                             self.decode_queue.append(req)
@@ -203,19 +228,25 @@ class PDEngine:
                     self._handle_decode_batch(batch)
                 except Exception as e:
                     if not self.is_running:
-                        logger.debug(f"Suppressing error during shutdown: {e}")
                         break
-                    
                     logger.error(f"Error in decode batch: {e}", exc_info=True)
                     for req in batch:
                         req.error = str(e)
                         self._complete_request(req)
             
-            # If both queues are empty, sleep briefly (10 microseconds)
-            elif decode_queue_len == 0 and prefill_queue_len == 0:
+            # === PHASE 4: Sleep only if truly idle ===
+            with self._lock:
+                decode_queue_len = len(self.decode_queue)
+                prefill_queue_len = len(self.prefill_queue)
+            
+            if decode_queue_len == 0 and prefill_queue_len == 0 and prefill_in_flight is None:
                 time.sleep(0.00001)
         
-        logger.info("Unified worker loop stopped")
+        # Cleanup: wait for in-flight prefill
+        if prefill_event is not None:
+            prefill_event.synchronize()
+        
+        logger.info("Pipelined worker loop stopped")
 
     def _trigger_callback(self, callback: Callable, request: Request, result_text: str):
         """Trigger completion callback (called from separate thread)."""
@@ -225,10 +256,21 @@ class PDEngine:
             logger.error(f"Error in callback for {request.request_id}: {e}")
 
     def _handle_prefill(self, request: Request):
-        """Handle prefill stage on stream 0."""
+        """Handle prefill stage on stream 0 (synchronous version for compatibility)."""
+        self._handle_prefill_async(request)
+        # Synchronize stream 0 to ensure prefill is complete
+        stream = self.stream_manager.get_stream(0)
+        if stream:
+            stream.synchronize()
+        request._pd_stage = TwoLaneType.DECODE
+        logger.debug(f"Prefill complete for {request.request_id}. KV cache initialized.")
+    
+    def _handle_prefill_async(self, request: Request):
+        """Handle prefill stage on stream 0 (async - doesn't wait for completion)."""
         request.prefill_start_time = time.time()
         
         # Prefill returns KV caches and logits (uses stream 0)
+        # This launches work on stream 0 but doesn't wait for it
         input_ids, draft_kv, verifier_kv, verifier_logits, draft_logits = self.model_runner.prefill(
             request.prompt,
             stream_id=0
@@ -241,14 +283,7 @@ class PDEngine:
         request.kv_cache_verifier = verifier_kv
         request.last_verifier_logits = verifier_logits
         request.last_draft_logits = draft_logits
-        
-        # Transition to decode lane (simple lock, no condition variable)
         request._pd_stage = TwoLaneType.DECODE
-        
-        with self._lock:
-            self.decode_queue.append(request)
-            
-        logger.debug(f"Prefill complete for {request.request_id}. KV cache initialized.")
 
     def _handle_decode_batch(self, batch: List[Request]):
         """Handle decode stage for a batch of requests."""
