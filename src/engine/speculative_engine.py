@@ -301,12 +301,14 @@ class SpeculativeEngine:
         # Immediately verify - like PD does atomically
         # We process each request to handle states correctly
         
+        import time
         for req in batch:
-             if req.decode_start_time == 0.0:
-                 req.decode_start_time = time.time()
-             # 1. Sample d1
+            if req.decode_start_time == 0.0:
+                req.decode_start_time = time.time()
+            # 1. Sample d1
             d1 = 0
             if req.last_draft_logits is not None:
+                # Use argmax for deterministic generation
                 d1 = torch.argmax(req.last_draft_logits).item()
                 if self.model_runner.draft_vocab_size and d1 >= self.model_runner.draft_vocab_size:
                     d1 = self.model_runner.draft_vocab_size - 1
@@ -328,11 +330,12 @@ class SpeculativeEngine:
                 generated_ids = gen_ids[0]
             
             full_drafts = curr_draft_tokens + generated_ids
-            
+            req.draft_tokens = full_drafts
+
             # 3. Verify
             verify_input = torch.tensor([full_drafts], device=self.model_runner.device)
             prev_logits = req.last_verifier_logits.unsqueeze(0) if req.last_verifier_logits is not None else None
-            
+
             accepted_batch, num_accepted_batch, _, _ = self.model_runner.verify_tokens(
                 verify_input,
                 [full_drafts],
@@ -340,9 +343,15 @@ class SpeculativeEngine:
                 previous_verifier_logits=prev_logits,
                 stream_id=0
             )
-            
+
             accepted_tokens = accepted_batch[0]
             num_accepted = num_accepted_batch[0]
+
+            # Update token counters (same as PDV-style)
+            req.tokens_generated += len(req.draft_tokens)
+            req.tokens_accepted += num_accepted
+            self.total_tokens_generated += len(req.draft_tokens)
+            self.total_tokens_accepted += num_accepted
             
             # 4. Update State
             if accepted_tokens:
@@ -360,9 +369,40 @@ class SpeculativeEngine:
                         req.kv_cache_verifier = out_v.past_key_values
                         req.last_verifier_logits = out_v.logits[:, -1, :]
 
-        # Process results immediately - no lane transitions!
-        import time
-        current_time = time.time()
+            # Update request state (same as PDV-style)
+            req.generated_tokens.extend(accepted_tokens)
+
+            if accepted_tokens:
+                new_ids = torch.tensor([accepted_tokens], device=self.model_runner.device, dtype=torch.long)
+                req._input_ids = torch.cat([req._input_ids, new_ids], dim=1)
+
+                # Update model states: both draft and verifier must advance by the accepted tokens
+                # to stay synchronized
+                acc_tensor = torch.tensor([accepted_tokens], device=self.model_runner.device)
+
+                # Update draft model state
+                with self.model_runner._draft_lock:
+                    with torch.no_grad():
+                        out_d = self.model_runner.draft_model(acc_tensor, past_key_values=req.kv_cache_draft, use_cache=True)
+                        req.kv_cache_draft = out_d.past_key_values
+                        req.last_draft_logits = out_d.logits[:, -1, :]
+
+                # Update verifier model state
+                with self.model_runner._verifier_lock:
+                    with torch.no_grad():
+                        out_v = self.model_runner.verifier_model(acc_tensor, past_key_values=req.kv_cache_verifier, use_cache=True)
+                        req.kv_cache_verifier = out_v.past_key_values
+                        req.last_verifier_logits = out_v.logits[:, -1, :]
+
+                # Check EOS
+                if self.model_runner.tokenizer.eos_token_id in accepted_tokens:
+                    self._handle_completion(req)
+                    continue
+
+            # Check max tokens
+            if len(req.generated_tokens) >= self.max_new_tokens:
+                self._handle_completion(req)
+                continue
 
             # Continue - back to decode
             self.scheduler.transition_request(req, LaneType.DECODE)

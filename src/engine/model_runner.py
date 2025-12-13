@@ -277,8 +277,9 @@ class ModelRunner:
             padded = d + [self.tokenizer.pad_token_id or 0] * (max_draft_len - len(d))
             padded_drafts.append(padded)
             
-        draft_ids = torch.tensor(padded_drafts, device=self.device, dtype=torch.long)
-        full_input = torch.cat([input_ids, draft_ids], dim=1)
+        # For verification, we run the model on just the draft tokens
+        # input_ids should already contain the draft tokens
+        full_input = input_ids
 
         # Prepare input with draft tokens
         # If we have past_key_values, input_ids should be just the new draft tokens (plus maybe the last verifier token?)
@@ -349,7 +350,7 @@ class ModelRunner:
                             first_token_pred = torch.argmax(prev_logits).item()
                             if self.verifier_vocab_size is not None and first_token_pred >= self.verifier_vocab_size:
                                 first_token_pred = self.verifier_vocab_size - 1
-                                
+
                             if len(curr_draft_tokens) > 0:
                                 if first_token_pred == curr_draft_tokens[0]:
                                     accepted_tokens.append(curr_draft_tokens[0])
@@ -389,10 +390,10 @@ class ModelRunner:
                         for i in range(len(curr_draft_tokens) - 1):
                             # We are checking draft[i+1]
                             draft_token_to_check = curr_draft_tokens[i+1]
-                            
+
                             pred_logits = logits[b, i, :]
                             predicted_token = torch.argmax(pred_logits, dim=-1).item()
-                            
+
                             if self.verifier_vocab_size is not None and predicted_token >= self.verifier_vocab_size:
                                 predicted_token = self.verifier_vocab_size - 1
 

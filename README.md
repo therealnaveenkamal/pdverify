@@ -163,7 +163,7 @@ nvidia-smi
 
 ```bash
 # Run a single request with default models
-python main.py --device cuda --prompt "Explain quantum computing"
+python main.py --device cuda --prompt "Explain quantum computing" --verifier-model meta-llama/Meta-Llama-3-8B --draft-model meta-llama/Llama-3.2-1B
 
 # Run with custom models
 python main.py \

@@ -318,7 +318,7 @@ class BaselineEngine:
         
         return result_text
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self):
         """Get engine statistics."""
         return {
             "total_tokens_generated": self.total_tokens_generated,
